@@ -11,10 +11,13 @@ use constant MINUTE => 60;
 
 our $TimePerIteration = 10;
 
+my $min_waste = 1000;
+
 my $balanced = 0;
 GetOptions(
         'i|interval=f' => \$TimePerIteration,
         'b|balanced=i' => \$balanced,
+        'm|minwaste=i' => \$min_waste,
         );
 $TimePerIteration = int($TimePerIteration * MINUTE);
 
@@ -121,9 +124,10 @@ sub update_wr {
 
     output("Checking resource stats");
     my $pstatus = $wr_stat->{status}{body} or die "Could not get planet status via \$struct->{status}{body}: " . Dumper($wr_stat);
+    my $waste_per_hour = $wr_stat->{status}{body}{waste_hour};
     my $waste = $pstatus->{waste_stored};
 
-    if (not $waste or $waste < 100) {
+    if (not $waste or $waste < $min_waste) {
         output("(virtually) no waste has accumulated, waiting");
         return 5*MINUTE;
     }
@@ -186,15 +190,21 @@ sub update_wr {
     }
 
     # TODO warn if we aren't keeping pace
-    # TODO don't do anything if waste production is negative and/or below some theshold
+    output("WARNING!!! WASTE RECYCLER NOT KEEPING PACE WITH WASTE PER HOUR!!!") if ((60 * 60) / $sec_per_waste < $waste_per_hour);
 
+    # don't do anything if waste production is negative and will put below threshold
+    if ($waste - $rec_waste > $min_waste) {
+        output(sprintf("RECYCLING %0d waste to ore=%0d, water=%0d, energy=%0d", $rec_waste, $ore, $water, $energy));
+        eval {
+            $wr->recycle(int($water), int($ore), int($energy), 0);
+        };
+        output("Recycling failed: $@"), return(1*MINUTE) if $@;
+        output("Waiting for recycling job to finish");
+        return int($rec_waste*$sec_per_waste)+3;
+    }
+    else {
+        output("Choosing not to recycle right this moment. -- It would put us below $min_waste waste threshold.");
+        return 5*MINUTE;
+    }
 
-    output(sprintf("RECYCLING %0d waste to ore=%0d, water=%0d, energy=%0d", $rec_waste, $ore, $water, $energy));
-    eval {
-        $wr->recycle(int($water), int($ore), int($energy), 0);
-    };
-    output("Recycling failed: $@"), return(1*MINUTE) if $@;
-
-    output("Waiting for recycling job to finish");
-    return int($rec_waste*$sec_per_waste)+3;
 }
