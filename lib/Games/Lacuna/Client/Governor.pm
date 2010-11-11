@@ -3,7 +3,7 @@ use strict;
 use warnings;
 no warnings 'uninitialized'; # Yes, I count on undef to be zero.  Cue admonishments.
 
-use Games::Lacuna::Client::PrettyPrint qw(trace message warning action);
+use Games::Lacuna::Client::PrettyPrint qw(trace message warning action ptime phours);
 use List::Util qw(sum max min);
 use List::MoreUtils qw(any part);
 use Hash::Merge qw(merge);
@@ -33,7 +33,8 @@ sub run {
     my $data = $client->empire->view_species_stats();
     $self->{status} = $data->{status};
     my $planets        = $self->{status}->{empire}->{planets};
-    my $home_planet_id = $self->{status}->{empire}->{home_planet_id}; 
+    my $home_planet_id = $self->{status}->{empire}->{home_planet_id};
+    $self->{planet_names} = { map { $_ => $planets->{$_} } keys %$planets };
 
     my $do_keepalive = 1;
     my $start_time = time();
@@ -56,15 +57,18 @@ sub run {
             $self->{current}->{planet_id} = $pid;
             $self->{current}->{config} = $colony_config;
             $self->govern();
+#            print Dumper($self->{push_info});
         }
-        my $next_action_in = min(values %{$self->{next_action}}) - time;
+        $self->coordinate_pushes();
+        my $next_action_in = min(grep { $_ > time } values %{$self->{next_action}}) - time;
         if (defined $next_action_in && ($next_action_in + time) < ($config->{keepalive} + $start_time)) {
             if ($next_action_in <= 0) {
                 $do_keepalive=0;
             }
             else {
-                trace("Expecting to govern again in $next_action_in seconds, sleeping");
-                sleep($next_action_in); 
+                my $nat_time = ptime($next_action_in);
+                trace("Expecting to govern again in $nat_time or so, sleeping...");
+                sleep($next_action_in + 5);
                 $do_keepalive = 1;
             }
         }
@@ -78,12 +82,14 @@ sub govern {
     my ($pid, $cfg) = @{$self->{current}}{qw(planet_id config)};
     my $client = $self->{client};
 
-    my $status = $client->body( id => $pid )->get_status()->{body};
+    my $result  = $self->{client}->body( id => $pid )->get_buildings();
+    my $details = $result->{buildings};
+    my $status  = $result->{status}->{body};
+    $self->{status}->{$pid} = $status;
 
     message("Governing ".$status->{name}) if ($self->{config}->{verbosity}->{message});
     Games::Lacuna::Client::PrettyPrint::show_status($status) if ($self->{config}->{verbosity}->{summary});
 
-    my $details = $self->{client}->body( id => $pid )->get_buildings()->{buildings};
     $self->{building_cache}->{body}->{$pid} = $details; 
     for my $bid (keys %{$self->{building_cache}->{body}->{$pid}}) {
         $self->{building_cache}->{body}->{$pid}->{$bid}->{pretty_type} = 
@@ -98,6 +104,7 @@ sub govern {
             "$res\_capacity", 
             "$res\_hour"
         };
+        $rate += 0.00001;
         my $remaining            = $capacity - $amount;
         $status->{full}->{$res}  = $remaining / $rate;
         $status->{empty}->{$res} = $amount / ( -1 * $rate );
@@ -106,20 +113,18 @@ sub govern {
     $self->{current}->{status} = $status;
 
     # Check the size of the build queue
+    my $max_queue = 1;
     my ($dev_ministry) = $self->find_buildings('Development');
     if ($dev_ministry) {
-        my $dev_min_details = $dev_ministry->view;
-        my $current_queue = scalar @{$dev_min_details->{build_queue}};
-        my $max_queue = $dev_min_details->{building}->{level} + 1;
-        $self->{current}->{build_queue} = $dev_min_details->{build_queue};
-        $self->{current}->{build_queue_remaining} = $max_queue - $current_queue;
-        if ($current_queue == $max_queue) {
-            warning("Build queue is full on ".$self->{current}->{status}->{name});
-        } 
-    } else {
-        delete $self->{current}->{build_queue};
-        delete $self->{current}->{build_queue_remaining};
+        $max_queue = $self->building_details($pid,$dev_ministry->{building_id})->{level} + 1;
     }
+
+    my $current_queue = scalar grep { exists $_->{pending_build} } values %$details;
+    $self->{current}->{build_queue_remaining} = $max_queue - $current_queue;
+    $self->{next_action}->{$pid} = max(map { $_->{pending_build}->{seconds_remaining} + time } values %$details);
+    if ($current_queue == $max_queue) {
+        warning("Build queue is full on ".$self->{current}->{status}->{name});
+    } 
 
     for my $priority (@{$cfg->{priorities}}) {
         trace("Priority: $priority") if ($self->{config}->{verbosity}->{trace});
@@ -127,7 +132,101 @@ sub govern {
     }
 
     if ($dev_ministry) {
-        $self->{next_action}->{$pid} = max(map { $_->{seconds_remaining} } @{$dev_ministry->view->{build_queue}}) + time();
+        ### If we have a build queue, sleep till the waste queue empties or the building
+        ### queue empties, whichever is first.
+        my $next_build = max(map { $_->{seconds_remaining} } @{$dev_ministry->view->{build_queue}});
+        $self->set_next_action_if_sooner( $next_build + time() );
+    }
+}
+
+sub coordinate_pushes {
+    my $self = shift;
+    my $info = $self->{push_info};
+    my $min  = $self->{config}->{push_minimum_load};
+
+    $Data::Dumper::Sortkeys = 1;
+    #print Dumper $info;
+
+    delete $self->{trade_ships};
+    $self->{sent_ships} = [];
+    trace("Requiring minimum load of $min x capacity to make a push");
+    $self->coordinate_push_mode($info,$min,1);  # Overload pushes
+    $self->coordinate_push_mode($info,$min);    # Request pushes
+}
+
+sub coordinate_push_mode {
+    my ( $self, $info, $min, $mode ) = @_;    # $mode is true for overload
+
+    for my $pid ( keys %$info ) {
+        for my $res ( keys %{ $info->{$pid} } ) {
+            next if ( $mode && $info->{$pid}->{$res}->{overload} == 0 );
+            my $reqd = $info->{$pid}->{$res}->{ $mode ? 'overload' : 'requested' };
+            if ( $reqd > 0 ) {
+                trace(sprintf("%s would like to %s %s %s",
+                    $self->{planet_names}->{$pid},
+                    ($mode ? 'get rid of' : 'ask for'),
+                    $reqd,
+                    $res));
+                my $candidate;
+                for my $other ( keys %$info ) {
+                    next if ( $other == $pid );
+                    my $orig = $mode ? $pid   : $other;
+                    my $dest = $mode ? $other : $pid;
+
+                    my $avail = $mode ? min( $info->{$other}->{$res}->{space_left}, $reqd ) : min( $info->{$other}->{$res}->{available} , $reqd ); 
+                    my @ships = defined $self->{trade_ships}->{$orig} 
+                        ? (grep { my $s=$_; not any { $s->{id} == $_ } @{$self->{sent_ships}} } @{$self->{trade_ships}->{$orig}})
+                        : @{ $info->{$orig}->{trade}->get_trade_ships()->{ships} };
+                    $self->{trade_ships}->{$orig} = [@ships];
+
+                    if ( defined $self->{config}->{push_ships_named} ) {
+                        my $name_match = $self->{config}->{push_ships_named};
+                        @ships = grep { $_->{name} =~ /$name_match/i } @ships;
+                    }
+                    @ships = grep { ( $avail / $_->{hold_size} ) >= $min } @ships;
+                    for my $ship (@ships) {
+                        my $amt_to_ship = $avail > $ship->{hold_size} ? $ship->{hold_size} : $avail;
+
+                        my @items;
+                        if ($res eq 'food' or $res eq 'ore') {
+                            for my $spec ($res eq 'food' ? $self->food_types : $self->ore_types) {
+                                my $has = $mode ? $info->{$pid} : $info->{$other};
+                                push @items, { type => $spec, quantity => int(($has->{$spec}->{available} / $has->{$res}->{available}) * $amt_to_ship) };
+                            }
+                        } else {
+                            push @items, { type => $res, quantity => int($amt_to_ship) };
+                        }
+                        @items = grep { $_->{quantity} > 0 } @items;
+
+                        $ship->{estimated_travel_time} = estimate_travel_time($orig,$dest,$ship->{speed});
+
+                        my $metric = $amt_to_ship / $ship->{estimated_travel_time};
+                        if ( $metric > $candidate->{metric} ) {    # Candidate metric is cargo amount / time to destination
+                            $candidate->{metric} = $metric;
+                            $candidate->{trade}  = $info->{$orig}->{trade};
+                            $candidate->{orig}   = $orig;
+                            $candidate->{dest}   = $dest;
+                            $candidate->{name}   = $ship->{name};
+                            $candidate->{ship}   = $ship->{id};
+                            $candidate->{items}  = [ @items ];
+                        }
+                    }
+                }
+                if ( defined $candidate ) {
+                    action(
+                        sprintf "Pushing from %s to %s with %s carrying: %s\n",
+                        $self->{planet_names}->{ $candidate->{orig} },
+                        $self->{planet_names}->{ $candidate->{dest} },
+                        $candidate->{name}, join(q{, },map { $_->{quantity}." ".$_->{type} } @{$candidate->{items}})
+                    );
+                    $info->{ $candidate->{orig} }->{trade}->push_items( $candidate->{dest}, $candidate->{items}, { ship_id => $candidate->{ship} } );
+                    push @{$self->{sent_ships}}, $candidate->{ship};
+                }
+                else {
+                    trace("No suitable pushes found.");
+                }
+            }
+        }
     }
 }
 
@@ -161,8 +260,8 @@ sub resource_crisis {
     for my $res (sort { $status->{$key}->{$a} <=> $status->{$key}->{$b} } keys %{$status->{$key}}) {
         my $time_left = $status->{$key}->{$res};
         if ( $time_left < $cfg->{crisis_threshhold_hours} && $time_left >= 0) {
-            warning(sprintf("%s crisis detected for %s: Only %.1f hours remain until $key, less than %.1f hour threshhold.",
-                ucfirst($type), uc($res), $time_left, $cfg->{crisis_threshhold_hours})) if $self->{config}->{verbosity}->{warning};
+            warning(sprintf("%s crisis detected for %s: Only %s remain until $key, less than %s threshhold.",
+                ucfirst($type), uc($res), phours($time_left), phours($cfg->{crisis_threshhold_hours}))) if $self->{config}->{verbosity}->{warning};
 
             # Attempt to increase production/storage
             my $upgrade_succeeded = $self->attempt_upgrade_for($res, $type, 1 ); # 1 for override, this is a crisis.
@@ -186,30 +285,56 @@ sub construction {
     # Not yet implemented.
 }
 
+sub estimate_travel_time {
+    my ($self, $orig, $dest, $speed);
+
+    my ($ox, $oy) = ($self->{status}->{$orig}->{x}, $self->{status}->{$orig}->{y});
+    my ($dx, $dy) = ($self->{status}->{$dest}->{x}, $self->{status}->{$dest}->{y});
+
+    return int(sqrt((($ox-$dx)**2) + (($oy-$dy)**2))*3600);
+}
+
+sub production_upgrades {
+    my $self = shift;
+    $self->_resource_upgrader('production');
+}
+
+sub storage_upgrades {
+    my $self = shift;
+    $self->_resource_upgrader('storage');
+}
+
 sub resource_upgrades {
+    my $self = shift;
+    $self->production_upgrades;
+    $self->storage_upgrades;
+}
+
+sub _resource_upgrader {
     my ($self, $type) =  @_;
     my ($status, $cfg) = @{$self->{current}}{qw(status config)};
     my @reslist = qw(food ore water energy waste happiness);
 
-    for my $type(qw(production storage)) {
-        # Stop without processing if the build queue is full.
-        if((defined $self->{current}->{build_queue_remaining}) &&
-            ($self->{current}->{build_queue_remaining} <= $cfg->{reserve_build_queue})) {
-            warning(sprintf("Aborting, %s slots in build queue <= %s reserve slots specified",
-                $self->{current}->{build_queue_remaining},
-                $cfg->{reserve_build_queue}));
-            return;
-        }
+    # Stop without processing if the build queue is full.
+    if((defined $self->{current}->{build_queue_remaining}) &&
+        ($self->{current}->{build_queue_remaining} <= $cfg->{reserve_build_queue})) {
+        warning(sprintf("Aborting, %s slots in build queue <= %s reserve slots specified",
+            $self->{current}->{build_queue_remaining},
+            $cfg->{reserve_build_queue}));
+        return;
+    }
 
-        my $profile = normalized_profile($cfg->{profile},$type,@reslist);
-        my $selected = select_resource($status,$profile,$type eq 'production' ? 'hour' : 'capacity',@reslist);
+    my $profile = normalized_profile($cfg->{profile},$type,@reslist);
+    my @selected = select_resource($status,$profile,$type eq 'production' ? 'hour' : 'capacity',@reslist);
+    for my $selected ( @selected ){
         my $upgrade_succeeded = $self->attempt_upgrade_for($selected, $type ); # 1 for override, this is a crisis.
 
         if ($upgrade_succeeded) {
             my $bldg_data = $self->{building_cache}->{body}->{$status->{id}}->{$upgrade_succeeded};
             action(sprintf("Upgraded %s, %s (Level %s)",$upgrade_succeeded,$bldg_data->{pretty_type},$bldg_data->{level}));
+            last;
         } else {
-            warning("Could not find any suitable buildings to upgrade");
+            warning("Could not find any suitable buildings for $selected to upgrade");
         }
     }
 }
@@ -240,18 +365,23 @@ sub select_resource {
     my $max_discrepancy;
     my $selected;
 
+    my %discrepancy;
     for my $res (@reslist) {
         # Can't store happiness
         next if ($res eq 'happiness' and $key_type eq 'capacity');
         my $prop = $status->{"$res\_$key_type"} / $hourly_total;
-        my $discrepancy = $profile->{$res} - $prop;
-        if ($discrepancy > $max_discrepancy) {
-            $max_discrepancy = $discrepancy;
-            $selected = $res;
-        }
+        $discrepancy{$res} = $profile->{$res} - $prop;
     }
-    trace(sprintf("Discrepancy of %2d%% ($key_type) detected for %s, selecting for upgrade.",$max_discrepancy*100,$selected));
-    return $selected;
+    my @selected = reverse sort { $discrepancy{$a} <=> $discrepancy{$b} } keys %discrepancy;
+    for my $selected (@selected){
+        trace(
+            sprintf(
+                "Discrepancy of %2d%% ($key_type) detected for %s.",
+                $discrepancy{$selected}*100, $selected
+            )
+        );
+    }
+    return @selected;
 }
 
 sub other_upgrades {
@@ -284,6 +414,15 @@ sub recycling {
     my @available = grep { not exists $self->building_details($pid,$_->{building_id})->{work} } @recycling;
     my $jobs_running = (scalar @recycling - scalar @available);
     trace("$jobs_running recycling jobs running on ".$status->{name});
+
+    do {
+        ### If a job will finish before our next run, lets set ourselves up to run again.
+        my @working = grep { defined $self->building_details($pid, $_->{building_id})->{work} } @recycling;
+        my @recycle_times = map {
+            $self->building_details($pid, $_->{building_id})->{work}->{seconds_remaining}
+        } @working;
+        $self->set_next_action_if_sooner( $_ + time() ) for @recycle_times;
+    };
 
     if ($jobs_running >= $concurrency) {
         warning("Maximum (or more) concurrent recycling jobs ($concurrency) are running, aborting.");
@@ -329,7 +468,10 @@ sub recycling {
         $recycle_res{$res} = $to_recycle;
     }
     eval {
-        $center->recycle(@recycle_res{@rr});
+        my $center_view = $center->recycle(@recycle_res{@rr});
+        $self->set_next_action_if_sooner(
+            $center_view->{recycle}{seconds_remaining}
+        );
     };
     if ($@) {
         warning("Problem recycling: $@");
@@ -338,8 +480,80 @@ sub recycling {
     }
 }
 
-sub pushes {
-    # Not yet implemented.
+sub set_next_action_if_sooner {
+    my $self = shift;
+    my $time = shift;
+    my $pid = $self->{current}{planet_id};
+    my $ctime= $self->{next_action}->{$pid};
+    return if not defined $time;
+    $self->{next_action}->{$pid} =
+        (defined $ctime and $ctime < $time) ? $ctime : $time;
+    return $self->{next_action}->{$pid};
+}
+
+sub pushes {  # This stage merely analyzes what we have or need.  Actual pushes occur in run().
+    my $self = shift;
+    my ($pid, $status, $cfg) = @{$self->{current}}{qw(planet_id status config)};
+    my @reslist = qw(food ore water energy waste);
+
+    my @trade = $self->find_buildings('Trade');
+    my $stored;
+
+    # Consider Excess
+    if (scalar @trade) {  # Need a Trade Ministry to consider pushing from here.
+        $self->{push_info}->{$pid}->{trade} = $trade[0];
+        $stored = $trade[0]->get_stored_resources->{resources};
+
+        for my $res (@reslist) {
+            my $profile = merge($cfg->{profile}->{$res} || {},$cfg->{profile}->{_default_});
+            my $have = $status->{"$res\_stored"};
+            my $available = $have - ($status->{"$res\_capacity"} * $profile->{push_above});
+            if (defined $profile->{overload_above} and
+                (($status->{"$res\_stored"} / $status->{"$res\_capacity"}) >= $profile->{overload_above})) {
+                $self->{push_info}->{$pid}->{$res}->{overload} = $available;
+            }
+            if ($available > 0) {
+                if ($res eq 'food' or $res eq 'ore') {
+                   for my $spec ($res eq 'food' ? $self->food_types : $self->ore_types) {
+                        my $spec_profile = merge($cfg->{profile}->{$res}->{specifics}->{$spec} || {},
+                                                    $cfg->{profile}->{$res}->{specifics}->{_default_});
+                        my $spec_available = $stored->{$spec} - $spec_profile->{push_above};
+                        if ($spec_available > 0) {
+                            $self->{push_info}->{$pid}->{$spec}->{available} = $spec_available;
+                        }
+                   } 
+                   $self->{push_info}->{$pid}->{$res}->{available} = sum(map { $_->{available} } @{ $self->{push_info}->{$pid} }{$res eq 'food' ? $self->food_types : $self->ore_types});
+                } else {
+                   $self->{push_info}->{$pid}->{$res}->{available} = $available;
+                }
+            }
+        }
+
+    } else {
+        trace("Can't push from here without a Trade Ministry");
+    }
+
+    # Consider Need
+    for my $res (@reslist) {
+        my $profile = merge($cfg->{profile}->{$res} || {},$cfg->{profile}->{_default_});
+        $self->{push_info}->{$pid}->{$res}->{space_left} = ($status->{"$res\_capacity"} * $profile->{requested_level}) - $status->{"$res\_stored"};
+        if (($status->{"$res\_stored"}/$status->{"$res\_capacity"}) < $profile->{request_below}) {
+            my $amt = int($status->{"$res\_capacity"} * $profile->{requested_level}) - $status->{"$res\_stored"};
+            $self->{push_info}->{$pid}->{$res}->{requested} = $amt;
+        }
+        if (scalar @trade) { # Consider specific needs
+            if (not defined $stored) {
+                $stored = $trade[0]->get_stored_resources->{resources};
+            }
+            for my $spec ($res eq 'food' ? $self->food_types : $self->ore_types) {
+                my $spec_profile = merge($profile->{specifics}->{$spec} || {},
+                                         $profile->{specifics}->{_default_});
+                next if ($spec_profile->{requested_amount} == 0);
+                my $amt = $spec_profile->{requested_amount} - $stored->{$spec};
+                $self->{push_info}->{$pid}->{$spec}->{requested} = $amt;    
+            }
+        } 
+    }
 }
 
 sub building_details {
@@ -548,6 +762,14 @@ sub upgrade_cost {
     return sum(@{$hash}{qw(food ore water energy waste)});
 }
 
+sub food_types {
+    return qw(algae apple bean beetle bread burger chip cider corn fungus lapis meal milk pancake pie potato root shake soup syrup wheat);
+}
+
+sub ore_types {
+    return qw(anthracite bauxite beryl chalcopyrite chromite fluorite galena goethite gold gypsum halite kerogen magnetite methane monazite rutile sulfur trona uraninite zircon);
+}
+
 1;
 
 __END__
@@ -628,6 +850,19 @@ queue will be empty before the keepalive window expires, the script will
 not terminate, but will instead sleep and wait for that build queue to empty
 before once again governing that colony.  Setting this to 0 will
 effective disable this behavior.
+
+=head2 push_minimum_load
+
+This is a proportion, i.e. 0.5 for 50%.  It indicates the minimum amount
+of used cargo space to require before a ship will be sent on a push.  
+E.g., if set to 0.25, a ship must be at least 25% full of its maximum
+cargo capacity or it will not be considered eligible for a push.
+
+=head2 push_ships_named
+
+If defined, ship names must match this substring (case-insensitive) to
+be eligible to be used for pushes.  This is an easy to to tell the governor
+which ships it can utilize.
 
 =head2 verbosity
 
@@ -722,11 +957,14 @@ This is a list of identifiers for each of the actions the governor
 will perform.  They are performed in the order specified.  Currently
 implemented values include:
 
-production_crisis, storage_crisis, resource_upgrades, recycling
+production_crisis, storage_crisis, resource_upgrades, production_upgrades,
+storage_upgrades, recycling, pushes
+
+Note: resource_upgrades performs both a production_upgrades and storage_upgrades priority.
 
 To be implemented are:
 
-repairs, construction, other_upgrades, pushes
+repairs, construction, other_upgrades
 
 =head2 profile
 
@@ -822,13 +1060,53 @@ use used instead.
 
 =head2 push_above
 
-Not yet implemented.  Resources above this level are considered eligible for pushing
-to more needy colonies.
+Resources above this level are considered eligible for pushing
+to more needy colonies.  Also used as the amount to leave behind when pushing
+away due to an overload.  This is a proportion between 0 and 1 interpreted as
+this amount times your capacity.
 
-=head2 want_push_to
+=head2 overload_above
 
-Not yet implemented.  Defines at what level we start asking other colonies for help
-in terms of resources pushes.
+Resources above this level are considered "overloaded" and will be given priority
+for pushes to other colonies where space is available.  The amount to be shipped
+away is everything higher than push_above, see above.  This is a proportion between
+0 and 1 interpreted as this amount times your capacity.
+
+=head2 request_below
+
+Resources below this level trigger a push request from colonies where this resource
+is available.  This is a proportion between 0 and 1 interpreted as
+this amount times your capacity.
+
+=head2 requested_level
+
+When a push is requested, the amount we would like to receive is calculated to be
+enough to bring the amount of resource up to this level. This is a proportion 
+between 0 and 1 interpreted as this amount times your capacity.
+
+=head2 specifics
+
+For ore and food, you can specify additional parameters for pushing.  Keys beneath
+this are specific types of resource, such as 'anthracite' beneath 'ore', and
+'apples' beneath 'food'. You can also use the _default_ key beneath here.  For example:
+
+    food:
+      specifics:
+        _default_:
+          push_above: 500
+
+Would specify that you want to keep at least 500 of each individual type of food on hand.
+
+=head3 requested_amount
+
+If you want to accumulate a specific amount of a specific resource, you can specify that
+using this option.  If you just want to accumulate as much as possible of a specific resource,
+set this to something obscenely high.
+
+=head3 push_above
+
+This functions like the regular push_above, but is a scalar amount, rather than a proportion
+of capacity.  I.e., 500 means 500.
 
 =head2 recycle_above
 
@@ -867,7 +1145,6 @@ Pick whichever we have the least in storage
 =head3 production
 
 Pick whichever we produce least of
-
 
 =head1 SEE ALSO
 
