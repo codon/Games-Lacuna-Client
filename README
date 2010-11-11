@@ -10,3 +10,4 @@ The following CPAN modules are required to use the example scripts:
 * AnyEvent
 * Crypt::SSLeay
 * Hash::Merge
+* Number::Format
