@@ -1,6 +1,9 @@
+#!/usr/bin/perl 
 use strict;
 use warnings;
 use 5.010000;
+use FindBin;
+use lib "$FindBin::Bin/../lib";
 use Games::Lacuna::Client;
 use List::Util qw(min max sum);
 use Data::Dumper;
