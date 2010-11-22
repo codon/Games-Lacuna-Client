@@ -9,12 +9,25 @@ use YAML::Any;
 
 $| = 1;
 
-my $client_config   = '/path/to/client_config.yml';
-my $governor_config = '/path/to/governor_config.yml';
+my $cfg_file = shift(@ARGV) || 'lacuna.yml';
+unless ( $cfg_file and -e $cfg_file ) {
+            die "Did not provide a config file";
+}
 
-my $client = Games::Lacuna::Client->new( cfg_file => $client_config );
+my $governor_config = shift(@ARGV) || 'governor.yml';
+unless ( $governor_config and -e $governor_config ) {
+            die "Did not provide a config file";
+}
 
-$Games::Lacuna::Client::PrettyPrint::ansi_color = 1;
+my $client = Games::Lacuna::Client->new(
+    cfg_file => $cfg_file,
+    #debug    => 1,
+);
+
+if ( $^O !~ /MSWin32/) {
+    $Games::Lacuna::Client::PrettyPrint::ansi_color = 1;
+}
+
 my $governor = Games::Lacuna::Client::Governor->new( $client, $governor_config );
 my $arg = shift @ARGV;
 $governor->run( defined $arg and $arg eq 'refresh' );
