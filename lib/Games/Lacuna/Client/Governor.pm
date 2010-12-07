@@ -1,13 +1,15 @@
 package Games::Lacuna::Client::Governor;
 use strict;
 use warnings;
+use English qw(-no_match_vars);
 no warnings 'uninitialized'; # Yes, I count on undef to be zero.  Cue admonishments.
 
 use Games::Lacuna::Client::PrettyPrint qw(trace message warning action ptime phours);
 use List::Util qw(sum max min);
-use List::MoreUtils qw(any part);
+use List::MoreUtils qw(any part uniq);
 use Hash::Merge qw(merge);
 use JSON qw(to_json from_json);
+use Carp;
 
 use Data::Dumper;
 
@@ -47,6 +49,7 @@ sub run {
     $self->load_cache();
 
     do {
+        my @priorities;
         if ( $self->{config}->{dry_run} ) {
             message("Starting dry run, actions are not actually taking place...");
         }
@@ -56,13 +59,26 @@ sub run {
             trace( "Examining " . $planets->{$pid} ) if ( $self->{config}->{verbosity}->{trace} );
             my $colony_config = merge( $config->{colony}->{ $planets->{$pid} } || {}, $config->{colony}->{_default_} );
 
+            ### Fix the merge w/ priority lists.
+            ### Normally Hash::Merge just concats two lists.
+            ### We want our more specific array to override.
+            if( my $colony_priorities = $config->{colony}{$planets->{$pid}}{priorities} ){
+                $colony_config->{priorities} = $colony_priorities;
+            }
+
             next if ( not exists $colony_config->{priorities} or $colony_config->{exclude} );
             $self->{current}->{planet_id} = $pid;
             $self->{current}->{config}    = $colony_config;
+            push @priorities, @{$colony_config->{priorities} || [] };
             $self->govern();
 #            print Dumper($self->{push_info});
         }
-        $self->coordinate_pushes();
+
+        ### Do post_$priority actions.
+        for my $priority (uniq @priorities) {
+            $self->do_post_priority($priority);
+        }
+
         Games::Lacuna::Client::PrettyPrint::ship_report($self->{ship_info},$self->{config}->{ship_info_sort}) if defined $self->{ship_info};
         trace(sprintf("%d RPC calls this run",$self->{client}->{total_calls})) if ($self->{config}->{verbosity}->{trace});
         if ( $self->{config}->{dry_run} ) {
@@ -109,7 +125,15 @@ sub govern {
     }
 
     if ($self->{config}->{verbosity}->{production}) {
-        Games::Lacuna::Client::PrettyPrint::production_report(map { $self->building_details($pid,$_) } keys %$details);
+        my @buildings = map { $self->building_details($pid,$_) } keys %$details;
+        # We need to get the details from view_platform at the mining ministry, if it exists, and add it into the details.
+        for (@buildings) {
+            if ($_->{name} eq 'Mining Ministry') {
+                my $platforms = $client->building( id => $_->{id}, type => 'MiningMinistry' )->view_platforms->{platforms};
+                $_->{ore_hour} += sum( map { my $p=$_; sum(map { $p->{$_ } } grep {/_hour$/} keys %$p) } @$platforms);
+            }
+        }
+        Games::Lacuna::Client::PrettyPrint::production_report(@buildings);
     }
 
 
@@ -137,6 +161,14 @@ sub govern {
     }
 
     my $current_queue = scalar grep { exists $_->{pending_build} } values %$details;
+    $self->{current}->{build_queue} = [ 
+        map { 
+            { 
+                building_id => $_, 
+                seconds_remainings => $details->{$_}->{pending_build}->{seconds_remaining},
+            }
+        } grep { exists $details->{$_}->{pending_build} } keys %$details
+    ];
     $self->{current}->{build_queue_remaining} = $max_queue - $current_queue;
     $self->{next_action}->{$pid} = max(map { $_->{pending_build}->{seconds_remaining} + time } values %$details);
     if ($current_queue == $max_queue) {
@@ -144,8 +176,7 @@ sub govern {
     } 
 
     for my $priority (@{$cfg->{priorities}}) {
-        trace("Priority: $priority") if ($self->{config}->{verbosity}->{trace});
-        $self->$priority();
+        $self->do_priority($priority);
     }
 
     if ($dev_ministry) {
@@ -154,6 +185,85 @@ sub govern {
         my $next_build = max(map { $_->{seconds_remaining} } @{$dev_ministry->view->{build_queue}});
         $self->set_next_action_if_sooner( $next_build + time() );
     }
+}
+
+sub do_post_priority {
+    my $self    = shift;
+    my $priority = shift;
+    $priority = lc $priority;
+
+    trace("Post Priority: $priority") if $self->{config}{verbosity}{trace};
+    my $postsub = "post_$priority";
+
+    if( $self->can($postsub) ){
+        $self->$postsub();
+        return;
+    }
+
+    ### Try to see if a plugin wants to run.
+    my $plugin = $self->_priority_to_plugin($priority);
+
+    return if not $plugin;
+    return if not $plugin->can('post_run');
+
+    $plugin->post_run($self, $priority);
+
+    return;
+}
+
+sub _priority_to_plugin {
+    my $self     = shift;
+    my $priority = shift;
+    $priority = lc $priority;
+
+    my $cased_name  = join q{::}, map { ucfirst } split qr/_/, $priority;
+    $cased_name     = "Games::Lacuna::Client::Governor::$cased_name";
+    my $file_name  .= "$cased_name.pm";
+    $file_name     =~ s{::}{/}g;
+
+    if( not $INC{$file_name} ){
+        ### Module is not loaded, try to load it.
+        eval qq{require "$file_name";$cased_name->import();};
+
+        if( $EVAL_ERROR and $EVAL_ERROR =~ m/Can't locate $file_name in \@INC/ ){
+            #trace(
+            #    "Unable to load priority module [$priority].",
+            #    " We were unable to find the module in \@INC, is it spelled correctly?"
+            #);
+            return;
+        }
+        elsif( $EVAL_ERROR ){
+            warning("Error occured while loading priority module [$priority => $file_name]: $EVAL_ERROR");
+            return;
+        }
+    }
+
+    return $cased_name;
+}
+
+sub do_priority {
+    my $self    = shift;
+    my $priority = shift;
+    trace("Priority: $priority") if ($self->{config}->{verbosity}->{trace});
+
+    $priority = lc $priority;
+
+    if( $self->can($priority) ){
+        $self->$priority();
+        return;
+    }
+    else {
+        ### Grab the module name and run it.
+        my $plugin = $self->_priority_to_plugin($priority);
+        return if not $plugin;
+        $plugin->run($self, $priority);
+    }
+    return;
+}
+
+sub post_pushes {
+    my $self = shift;
+    $self->coordinate_pushes();
 }
 
 sub coordinate_pushes {
@@ -234,21 +344,23 @@ sub send_pushes {
             my $load_size = sum(map { $_->{quantity} } @{$route->{items}});
             $route->{load_size} = $load_size;
 
-            # Don't consider this route if the recipient planet can't store the load.
+            # Don't consider this route if the recipient planet can't store the load
+            # or if the source planet doesn't have the resources anymore.
             for my $shipping_item (@{$route->{items}}) {            
                 my $type = $shipping_item->{type};
                 my $qty  = $shipping_item->{quantity};
                 my $res  = (any {$_ eq $type} $self->food_types) ? 'food' :
                            (any {$_ eq $type} $self->ore_types)  ? 'ore'  :
                             $type;
+                my $avail_res  = $info->{$route->{orig}}->{$res}->{available};
                 my $space_left = $info->{$route->{dest}}->{$res}->{space_left};
 
                 # Reduce space_left by projected usage at current production levels on target
                 $space_left -= int($self->{status}->{$dest}->{"$res\_hour"} * ($route->{travel_time}/3600));
-
+  
+                next route if ($avail_res < $qty);
                 next route if ($space_left < $qty);
             }
-
 
             # Don't consider this route if the hold is not full enough.
             next if (($load_size / $route->{hold_size}) < $self->{config}->{push_minimum_load});
@@ -264,9 +376,11 @@ sub send_pushes {
                 $selected_route = $route;
             }
         }
-        push @selected_routes, $selected_route if defined ($selected_route);
 
-        # Reduce the space_left at the target.
+        next if not defined $selected_route;
+        push @selected_routes, $selected_route;
+
+        # Reduce the space_left at the target, and the availability at the source
         for my $shipping_item (@{$selected_route->{items}}) {            
             my $type = $shipping_item->{type};
             my $qty  = $shipping_item->{quantity};
@@ -274,6 +388,7 @@ sub send_pushes {
                        (any {$_ eq $type} $self->ore_types)  ? 'ore'  :
                        $type;
             $info->{$selected_route->{dest}}->{$res}->{space_left} -= $qty;
+            $info->{$selected_route->{orig}}->{$type}->{available} -= $qty;
 
             # Cache data about this shipment and its arrival time for later invocations of governor
             push @{$self->{cache}->{shipments}->{$selected_route->{dest}}}, {
@@ -728,54 +843,11 @@ sub pushes {  # This stage merely analyzes what we have or need.  Actual pushes 
     }
 }
 
-sub archaeology {
-    my $self = shift;
-    my ($pid, $status, $cfg) = @{$self->{current}}{qw(planet_id status config)};
-
-    my ($arch) = $self->find_buildings('Archaeology');
-    if (ref $self->building_details($pid,$arch->{building_id})->{work}) {
-        warning("The Archaeology Ministry on ".$self->{planet_names}->{$pid}." is busy.");
-        return;
-    }
-    my %ore_avail = %{$arch->get_ores_available_for_processing->{ore}};
-    my @ores = keys %ore_avail;
-
-    if (defined $cfg->{archaeology}->{search_only}) {
-        @ores = grep { my $o = $_; any { $o eq $_ } @{$cfg->{archaeology}->{search_only}} } @ores;
-    }
-
-    if (defined $cfg->{archaeology}->{do_not_search}) {
-        @ores = grep { my $o = $_; not any { $o eq $_ } @{$cfg->{archaeology}->{do_not_search}} } @ores;
-    }
-
-    my $selection = $cfg->{archaeology}->{'select'} || 'most';
-
-    my $ore;
-    if ($selection eq 'most') {
-        ($ore) = sort { $ore_avail{$b} <=> $ore_avail{$a} } @ores;
-    }
-    elsif ($selection eq 'least') {
-        ($ore) = sort { $ore_avail{$a} <=> $ore_avail{$b} } @ores;
-    }
-    elsif ($selection eq 'random') {
-        ($ore) = splice(@ores, rand(@ores), 1) 
-    }
-    else {
-        warning("Unknown archaeology selection command: $selection");
-    }
-
-    eval {
-        $arch->search_for_glyph($ore);
-    };
-    if ($@) {
-        warning("Unable to search for $ore at archaeology ministry: $@");
-    } else {
-        action("Searching for $ore glyph at archaeology ministry");
-    }
-}
-
 sub building_details {
     my ($self, $pid, $bid) = @_;
+
+    croak "Unable to retrieve building_details, require a valid planet_id and building_id"
+        if not $pid or not $bid;
 
     if ((time - $self->{cache}->{cache_time} > $self->{config}->{cache_duration})
         or
@@ -852,18 +924,21 @@ sub write_cache {
     }
 }
 
-sub attempt_upgrade_for {
-    my ($self,$resource,$type,$override) = @_;
+sub attempt_upgrade {
+    my ($self, $buildings, $override) = @ARG;
     my ($status, $pid, $cfg) = @{$self->{current}}{qw(status planet_id config)};
 
-    my @all_options = $self->resource_buildings($resource,$type);
+    croak "No buildings specified for upgrade attempt" if not $buildings;
+    croak "Current planet_id is not set" if not $pid;
+
+    my @all_options = ref $buildings eq 'ARRAY' ? @$buildings : $buildings;
 
     my %build_above = map { $_ => (($cfg->{profile}->{$_}->{build_above} > 0) ?
                 $cfg->{profile}->{$_}->{build_above} :
                 $cfg->{profile}->{_default_}->{build_above})
         } qw(food ore water energy);
 
-    Games::Lacuna::Client::PrettyPrint::upgrade_report(\%build_above,map { $self->building_details($pid,$_->{building_id}) } @all_options)
+    Games::Lacuna::Client::PrettyPrint::upgrade_report($status,\%build_above,map { $self->building_details($pid,$_->{building_id}) } @all_options)
         if ($self->{config}->{verbosity}->{upgrades});
 
     # Abort if an upgrade is in progress.
@@ -878,13 +953,14 @@ sub attempt_upgrade_for {
 
     my @options = part {
         my $bid = $_->{building_id};
-        (
-            not any { ($status->{"$_\_stored"} - $self->building_details($pid,$bid)->{upgrade}->{cost}->{$_}) 
+        my $insuff_resources = 
+            any { ($status->{"$_\_stored"} - $self->building_details($pid,$bid)->{upgrade}->{cost}->{$_}) 
                 < $build_above{$_} 
-            } qw(food ore water energy)
-            and (not ($status->{waste_stored} + $self->building_details($pid,$bid)->{upgrade}->{cost}->{waste})
-                > $status->{waste_capacity})
-        )+0;
+            } qw(food ore water energy);
+        my $waste_overflow = 
+            ($status->{waste_stored} + $self->building_details($pid,$bid)->{upgrade}->{cost}->{waste})
+                > $status->{waste_capacity};
+        return (not $insuff_resources and not $waste_overflow)+0;
     } @all_options;
 
     @options = map { ref $_ ? $_ : [] } @options[0,1];
@@ -896,9 +972,15 @@ sub attempt_upgrade_for {
     }
 
     my $upgrade_succeeded = 0;
+    UPGRADE:
     for my $upgrade (@upgrade_options) {
+        my $details = $self->building_details($pid,$upgrade->{building_id});
+        if (any { $_ eq $details->{pretty_type} } @{$cfg->{never_upgrade}}) {
+            trace(sprintf("Not allowed to upgrade %s, %s (Level %s)",$details->{id},$details->{pretty_type},$details->{level})) if ($self->{config}->{verbosity}->{trace});
+            next;
+        }
+
         eval { 
-            my $details = $self->building_details($pid,$upgrade->{building_id});
             trace(sprintf("Attempting to upgrade %s, %s (Level %s)",$details->{id},$details->{pretty_type},$details->{level})) if ($self->{config}->{verbosity}->{trace});
             if (not $self->{config}->{dry_run}) {
                $upgrade->upgrade();
@@ -910,17 +992,31 @@ sub attempt_upgrade_for {
                }
             }
         };
-        if (not $@) {
-            $upgrade_succeeded = $upgrade->{building_id};
-        } else {
-            trace("Upgrade failed: $@") if ($self->{config}->{verbosity}->{trace});
+        my $e = LacunaRPCException->caught;
+        if( $e and $e->code == '1010' ){
+            trace("This buildings already has an upgrade in progress!");
         }
-        last if $upgrade_succeeded;
+        elsif( $e = Exception::Class->caught ){
+            warning("Upgrade failed: $e");
+        }
+        else {
+            $upgrade_succeeded = $upgrade->{building_id};
+        }
+        last UPGRADE if $upgrade_succeeded;
     }
 
     # Decrement remaining build queue if upgrade succeeded.
     $self->{current}->{build_queue_remaining}-- if ($upgrade_succeeded);
     return $upgrade_succeeded;
+}
+
+sub attempt_upgrade_for {
+    my ($self,$resource,$type,$override) = @_;
+    my ($status, $pid, $cfg) = @{$self->{current}}{qw(status planet_id config)};
+
+    my @all_options = $self->resource_buildings($resource,$type);
+
+    return $self->attempt_upgrade( \@all_options, $override );
 }
 
 sub resource_buildings {
@@ -1300,28 +1396,6 @@ settings.
 (Not yet implemented).  Allow downgrading buildings if negative production 
 levels are causing problems.  True or false.
 
-=head2 archaeology
-
-This heading contains sub-keys related to archaeology searches. 
-NOTE: archaeology must be a specified item in the priorities list for
-archaeology searches to take place.
-
-=head3 search_only
-
-This is a list of ore types which should be exclusively searched for
-
-=head3 do_not_search
-
-This is a list of ore types which should be avoided in searches
-
-=head3 select
-
-This is how to select among candidate ores for a search.  One of 'most',
-pick whichever ore we have most of (subject to above restrictions), 'least',
-pick whichever we have least of (as above), or 'random', which picks one
-at random, subject to above restrictions.  If not specified, the default
-is 'most'.
-
 =head2 crisis_threshhold_hours
 
 A number of hours, decimals allowed.  
@@ -1340,6 +1414,11 @@ triggered which forces production upgrades for those resources.
 If this is true for any particular colony which would otherwise be governed,
 the governor will skip this colony and perform no actions.
 
+=head2 never_upgrade
+
+If defined, buildings whose class name appear in this list will never be upgraded by the governor.
+Classnames are, for example, "MiningMinistry" or "Fusion".
+
 =head2 pcc_is_storage
 
 If true, the Planetary Command Center is considered a regular storage
@@ -1353,13 +1432,19 @@ will perform.  They are performed in the order specified.  Currently
 implemented values include:
 
 production_crisis, storage_crisis, resource_upgrades, production_upgrades,
-storage_upgrades, recycling, pushes, ship_report, archaeology
+storage_upgrades, recycling, pushes, ship_report
 
 Note: resource_upgrades performs both a production_upgrades and storage_upgrades priority.
 
 To be implemented are:
 
 repairs, construction, other_upgrades
+
+B<Note: See the Games::Lacuna::Governor namespace for plugins.> Most plugins can be activated
+by simply including their names in the priority list.
+
+Known plugins: L<Games::Lacuna::Governor::Astronomy>, L<Games::Lacuna::Governor::Archaeology>,
+L<Games::Lacuna::Governor::Party>.
 
 =head2 profile
 
@@ -1548,12 +1633,12 @@ Pick whichever we produce least of
 
 =head1 SEE ALSO
 
-Games::Lacuna::Client, by Steffen Mueller on which this module is dependent.
+L<Games::Lacuna::Client>, by Steffen Mueller on which this module is dependent.
 
 Of course also, the Lacuna Expanse API docs themselves at L<http://us1.lacunaexpanse.com/api>. 
 
-The Games::Lacuna::Client distribution includes two files pertinent to this script. Well, three.  We need 
-Games::Lacuna::Client::PrettyPrint for output.
+The L<Games::Lacuna::Client distribution> includes two files pertinent to this script. Well, three.  We need 
+L<Games::Lacuna::Client::PrettyPrint> for output.
 
 Also, in F<examples>, you've got the example config file in governor.yml, and the example script in governor.pl.
 

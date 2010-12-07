@@ -29,7 +29,6 @@ our @BuildingTypes = (qw(
     Dairy
     Denton
     EnergyReserve
-    Entertainment
     Espionage
     EssentiaVein
     Fission
@@ -70,6 +69,7 @@ our @BuildingTypes = (qw(
     Singularity
     Soup
     Stockpile
+    SubspaceSupplyDepot
     Syrup
     TempleOfTheDrajilites
     TerraformingLab
