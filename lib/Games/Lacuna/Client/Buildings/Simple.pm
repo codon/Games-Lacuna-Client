@@ -73,6 +73,7 @@ our @BuildingTypes = (qw(
     TempleOfTheDrajilites
     TerraformingLab
     TerraformingPlatform
+    ThemePark
     University
     Volcano
     WasteEnergy
