@@ -120,7 +120,7 @@ sub _generate_method_per_spec {
     }
 
     if ($client->debug) {
-      print "DEBUG: " . __PACKAGE__ . " result " . Data::Dumper::Dumper($ret);
+      print STDERR "DEBUG: " . __PACKAGE__ . " result " . Data::Dumper::Dumper($ret);
     }
     return $ret->{result};
   };
