@@ -38,10 +38,12 @@ our @BuildingTypes = (qw(
     GeneticsLab
     Geo
     GeoThermalVent
+    GratchsGauntlet
     Grove
     HydroCarbon
     InterDimensionalRift
     KalavianRuins
+    KasternsKeep
     Lake
     Lagoon
     Lapis
@@ -73,6 +75,7 @@ our @BuildingTypes = (qw(
     TempleOfTheDrajilites
     TerraformingLab
     TerraformingPlatform
+    TheDillonForge
     ThemePark
     University
     Volcano
