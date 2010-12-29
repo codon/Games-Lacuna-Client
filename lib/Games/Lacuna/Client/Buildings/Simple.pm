@@ -12,11 +12,11 @@ our @BuildingTypes = (qw(
     Algae
     AlgaePond
     Apple
+    AtmosphericEvaporator
     Bean
     Beeldeban
     Bread
     Burger
-    Capitol
     Cheese
     Chip
     Cider
@@ -35,22 +35,25 @@ our @BuildingTypes = (qw(
     Fusion
     GasGiantLab
     GasGiantPlatform
-    GeneticsLab
     Geo
     GeoThermalVent
+    GratchsGauntlet
+    GreatBallOfJunk
     Grove
     HydroCarbon
     InterDimensionalRift
+    JunkHengeSculpture
     KalavianRuins
+    KasternsKeep
     Lake
     Lagoon
     Lapis
     LapisForest
-    LibraryOfJith
     LuxuryHousing
     Malcud
     MalcudField
     MassadsHenge
+    MetalJunkArches
     Mine
     MunitionsLab
     NaturalSpring
@@ -58,23 +61,25 @@ our @BuildingTypes = (qw(
     OreRefinery
     Oversight
     Pancake
+    PantheonOfHagness
     Pie
     PilotTraining
     Potato
     Propulsion
+    PyramidJunkSculpture
     Ravine
     RockyOutcrop
     Sand
+    SAW
     Shake
     Singularity
     Soup
+    SpaceJunkPark
     Stockpile
-    SubspaceSupplyDepot
     Syrup
-    TempleOfTheDrajilites
     TerraformingLab
     TerraformingPlatform
-    ThemePark
+    TheDillonForge
     University
     Volcano
     WasteEnergy
