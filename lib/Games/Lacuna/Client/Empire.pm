@@ -49,6 +49,7 @@ sub api_methods {
     disable_self_destruct => { default_args => [qw(session_id)] },
     redeem_essentia_code  => { default_args => [qw(session_id)] },
     view_species_stats    => { default_args => [qw(session_id)] },
+    redefine_species      => { default_args => [qw(session_id)] },
   };
 }
 
