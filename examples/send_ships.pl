@@ -2,32 +2,42 @@
 
 use strict;
 use warnings;
+use FindBin;
+use lib "$FindBin::Bin/../lib";
 use List::Util            (qw(first));
 use Games::Lacuna::Client ();
 use Getopt::Long          (qw(GetOptions));
 
-@ARGV = ('../lacuna.yml');
-
-my $cfg_file = shift(@ARGV) || 'lacuna.yml';
-unless ( $cfg_file and -e $cfg_file ) {
-	die "Did not provide a config file";
-}
-
-my @ship_names = ('Scanner 10');
-my $from = 'Conflag';
+my @ship_names;
+my @ship_types;
+my $speed;
+my $max;
+my $from;
 my $star;
-my $planet = 'Ember';
+my $planet;
+my $dryrun;
 
 GetOptions(
     'ship=s@'  => \@ship_names,
+    'type=s@'  => \@ship_types,
+    'speed=i'  => \$speed,
+    'max=i'    => \$max,
     'from=s'   => \$from,
     'star=s'   => \$star,
     'planet=s' => \$planet,
+    'dryrun!'  => \$dryrun,
 );
 
-usage() if !@ship_names || !$from;
+usage() if !@ship_names && !@ship_types;
+
+usage() if !$from;
 
 usage() if !$star && !$planet;
+
+my $cfg_file = shift(@ARGV) || 'lacuna.yml';
+unless ( $cfg_file and -e $cfg_file ) {
+    die "Did not provide a config file";
+}
 
 my $client = Games::Lacuna::Client->new(
 	cfg_file => $cfg_file,
@@ -109,45 +119,59 @@ my $space_port = $client->building( id => $space_port_id, type => 'SpacePort' );
 my $ships = $space_port->get_ships_for( $from_id, { body_id => $target_id}  );
 
 my $available = $ships->{available};
+my $sent = 0;
 
-my %sent;
-
-for my $ship_name (@ship_names) {
-    for my $ship ( @$available ) {
-        next if $ship->{name} ne $ship_name;
-        next if $sent{ $ship->{id} };
-        
-        send_ship( $ship );
-        
-        last;
-    }
-}
-
-sub send_ship {
-    my ($ship) = @_;
+for my $ship ( @$available ) {
+    next if @ship_names && !grep { $ship->{name} eq $_ } @ship_names;
+    next if @ship_types && !grep { $ship->{type} eq $_ } @ship_types;
+    next if $speed && $speed != $ship->{speed};
     
-    $space_port->send_ship( $ship->{id}, { $target_type => $target_id } );
+    if ($dryrun)
+    {
+      print qq{DRYRUN: };
+    }
+    else
+    {
+      $space_port->send_ship( $ship->{id}, { $target_type => $target_id } );
+    }
     
     printf "Sent %s to %s\n", $ship->{name}, $target_name;
     
-    $sent{ $ship->{id} } = 1;
+    $sent++;
+    last if $max && $max == $sent;
 }
+
 
 sub usage {
   die <<"END_USAGE";
 Usage: $0 send_ship.yml
-       --ship       NAME  (required)
+       --ship       NAME
+       --type       TYPE
+       --speed      SPEED
+       --max        MAX
        --from       NAME  (required)
        --star       NAME
        --planet     NAME
+       --dryrun
+
+Either of --ship_name or --type is required.
 
 --ship_name can be passed multiple times.
+
+--type can be passed multiple times.
+It must match the ship's "type", not "type_human", e.g. "scanner", "spy_pod".
+
+If --max is set, this is the maximum number of matching ships that will be
+sent. Default behaviour is to send all matching ships.
 
 --from is the colony from which the ship should be sent.
 
 If --star is missing, the planet is assumed to be one of your own colonies.
 
 At least one of --star or --planet is required.
+
+If --dryrun is specified, nothing will be sent, but all actions that WOULD
+happen are reported
 
 END_USAGE
 

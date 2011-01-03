@@ -1,6 +1,9 @@
+#!/usr/bin/perl 
 use strict;
 use warnings;
 use 5.010000;
+use FindBin;
+use lib "$FindBin::Bin/../lib";
 use Games::Lacuna::Client;
 use List::Util qw(min max sum);
 use Data::Dumper;
@@ -21,13 +24,18 @@ GetOptions(
         );
 $TimePerIteration = int($TimePerIteration * MINUTE);
 
-my $config_file = shift @ARGV;
+if ($water_perc or $ore_perc or $energy_perc) {
+	die "Percentages need to add up to 100\n" if $water_perc + $ore_perc + $energy_perc != 100;
+	for ($water_perc, $ore_perc, $energy_perc) { $_ = $_ / 100; }
+}
+
+my $config_file = shift @ARGV || 'lacuna.yml';
 usage() if not defined $config_file or not -e $config_file;
 
 my $client = Games::Lacuna::Client->new(
         cfg_file => $config_file,
         #debug => 1,
-        );
+);
 
 my $program_exit = AnyEvent->condvar;
 my $int_watcher = AnyEvent->signal(
@@ -37,7 +45,7 @@ my $int_watcher = AnyEvent->signal(
         undef $client;
         exit(1);
         }
-        );
+);
 
 #my $res = $client->alliance->find("The Understanding");
 #my $id = $res->{alliances}->[0]->{id};
@@ -45,7 +53,7 @@ my $int_watcher = AnyEvent->signal(
 my $empire = $client->empire;
 my $estatus = $empire->get_status->{empire};
 my %planets_by_name = map { ($estatus->{planets}->{$_} => $client->body(id => $_)) }
-keys %{$estatus->{planets}};
+    keys %{$estatus->{planets}};
 # Beware. I think these might contain asteroids, too.
 # TODO: The body status has a 'type' field that should be listed as 'habitable planet'
 

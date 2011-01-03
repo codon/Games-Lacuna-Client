@@ -4,6 +4,7 @@ use strict;
 use warnings;
 use Carp 'croak';
 use File::Temp qw( tempfile );
+use Cwd        qw( abs_path );
 
 our $VERSION = '0.01';
 use constant DEBUG => 1;
@@ -146,7 +147,7 @@ sub DESTROY {
 sub write_cfg {
   my $self = shift;
   if ($self->debug) {
-    print "DEBUG: Writing configuration to disk";
+    print STDERR "DEBUG: Writing configuration to disk";
   }
   croak("No config file")
     if not defined $self->cfg_file;
@@ -163,6 +164,9 @@ sub write_cfg {
 
   eval {
     my $target = $self->cfg_file();
+
+    # preserve symlinks: operate directly at destination
+    $target = abs_path $target;
 
     # save data to a temporary, so we don't risk trashing the target
     my ($tfh, $tempfile) = tempfile("$target.XXXXXXX"); # croaks on err
@@ -191,7 +195,7 @@ sub assert_session {
   my $now = time();
   if (!$self->session_id || $now - $self->session_start > $self->session_timeout) {
     if ($self->debug) {
-      print "DEBUG: Logging in since there is no session id or it timed out.\n";
+      print STDERR "DEBUG: Logging in since there is no session id or it timed out.\n";
     }
     if (my $cache = $self->cache()) {
       $cache->reset();
@@ -199,11 +203,11 @@ sub assert_session {
     my $res = $self->empire->login($self->{name}, $self->{password}, $self->{api_key});
     $self->{session_id} = $res->{session_id};
     if ($self->debug) {
-      print "DEBUG: Set session id to $self->{session_id} and updated session start time.\n";
+      print STDERR "DEBUG: Set session id to $self->{session_id} and updated session start time.\n";
     }
   }
   elsif ($self->debug) {
-      print "DEBUG: Using existing session.\n";
+      print STDERR "DEBUG: Using existing session.\n";
   }
   $self->{session_start} = $now; # update timeout
   return $self->session_id;

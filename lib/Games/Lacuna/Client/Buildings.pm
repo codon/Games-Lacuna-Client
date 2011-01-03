@@ -12,12 +12,18 @@ require Games::Lacuna::Client::Buildings::Simple;
 
 our @BuildingTypes = (qw(
     Archaeology
+    Capitol
     Development
     Embassy
+    EnergyReserve
+    Entertainment
+    FoodReserve
     Intelligence
     MiningMinistry
+    MissionCommand
     Network19
     Observatory
+    OreStorage
     Park
     PlanetaryCommand
     Security
@@ -36,21 +42,6 @@ for my $building_type ( @BuildingTypes ){
 use Class::XSAccessor {
   getters => [qw(building_id)],
 };
-
-sub type_from_url {
-  my $url = shift;
-  $url =~ m{/([^/]+)$} or croak("Bad URL: '$url'");
-  my $url_elem = $1;
-  
-  foreach my $type (@Games::Lacuna::Client::Buildings::BuildingTypes,
-                    @Games::Lacuna::Client::Buildings::Simple::BuildingTypes)
-  {
-    if (lc($type) eq $url_elem) {
-      return $type;
-    }
-  }
-  croak("Bad URL: '$url'");
-}
 
 sub api_methods {
   return {
@@ -100,19 +91,36 @@ sub build {
 }
 
 {
-  my %CamelCase_for;
-  sub subclass_for {
-    my ($class, $type) = @_;
+  my %type_for;
 
-    if (! keys %CamelCase_for) { # initialise mapping if needed
-      %CamelCase_for = map { lc($_) => $_ }
+  sub type_for {
+    my ($class, $hint) = @_;
+
+    if (! keys %type_for) { # initialise mapping if needed
+      %type_for = map { lc($_) => $_ }
         @Games::Lacuna::Client::Buildings::BuildingTypes,
         @Games::Lacuna::Client::Buildings::Simple::BuildingTypes;
     }
 
-    $type =~ s{^/}{}mxs;  # Body::get_buildings()' url is like '/lake'...
-    return "Games::Lacuna::Client::Buildings::$CamelCase_for{lc($type)}";
+    $hint =~ s{.*/}{}mxs;
+    $hint = lc($hint);
+    return $type_for{$hint} || undef;
   }
+}
+
+sub type_from_url {
+  my $url = shift;
+  croak "URL is undefined" if not $url;
+  $url =~ m{/([^/]+)$} or croak("Bad URL: '$url'");
+  my $url_elem = $1;
+  my $type = type_for(__PACKAGE__, $url) or croak("Bad URL: '$url'");
+  return $type;
+}
+
+sub subclass_for {
+  my ($class, $type) = @_;
+  $type = $class->type_for($type);
+  return "Games::Lacuna::Client::Buildings::$type";
 }
 
 

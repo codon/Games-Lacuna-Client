@@ -1,11 +1,22 @@
 #!/usr/bin/perl
+
 use strict;
 use warnings;
+
+use FindBin;
+use lib "$FindBin::Bin/../lib";
+
 use Games::Lacuna::Cache;
+
 use Data::Dumper;
+use Getopt::Long;
 
 binmode STDOUT, ":utf8";
 
+my $opts = {};
+GetOptions($opts,
+    'planet=s'
+);
 
 my $refresh = $ARGV[0];
 my $shiptype = $ARGV[1];
@@ -14,10 +25,14 @@ my $coords = $ARGV[2];
 
 usage() unless $shiptype && $coords;
 
+my %opts = ('cfg_file' => "/path/to/lacuna.yml",
+            'cache_file' => "/path/to/lac_cache.dat",
+            'refresh' => $refresh);
+
 my ($t_type, $t_name) = split(":", $coords);
 my $target_id = { $t_type => $t_name };
 
-my $laluna = Games::Lacuna::Cache->new($refresh);
+my $laluna = Games::Lacuna::Cache->new(%opts);
 my $empire_data = $laluna->empire_data();
 my $total_ships = 0;
 my $problem_ships = 0;
@@ -27,6 +42,8 @@ foreach my $planet (keys %{$empire_data->{'planets'}}){
     my $ship_count = 0;
     my $name = $status->{'name'};
     utf8::decode($name);
+
+    next if $opts->{planet} and lc($opts->{planet}) ne lc($name);
 
     print "\n+=========== $name ============\n";
 
@@ -66,22 +83,28 @@ if ($total_ships > 0 ){
 }
 
 sub usage{
-    print "Usage: launchpad.pl $refresh $shiptype $target . Consult script 
-        for target format\n";
+    print "Usage: launchpad.pl refresh shiptype target. Consult documentation for target format\n";
     exit;
 }
 
 =head1 SYNOPSIS
 
-Usage: launchpad.pl $refresh $shiptype $target.
+Usage: launchpad.pl refresh shiptype "target"
 
-Sends all available ships of type $shiptype to $target
+Sends all available ships of type shiptype to target.
+
 You must supply shiptype and target. Target should be of the form:
 
         "body_id:id_goes_here" 
         "body_name:My Planet"
         "star_id:id_goes_here"
         "star_name:My Star"
+
+Examples:
+        "body_id:1"
+        "body_name:Ud Vaijeu Eedd 4"
+        "star_id:5"
+        "star_name:Knioschow"
 
 Support for x/y not yet implemented. 
 

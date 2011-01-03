@@ -6,14 +6,16 @@ use FindBin;
 use lib "$FindBin::Bin/../lib";
 use List::Util            (qw(first));
 use Games::Lacuna::Client ();
-use Getopt::Long;
+use Getopt::Long          (qw(GetOptions));
 
 if ( $^O !~ /MSWin32/) {
     $Games::Lacuna::Client::PrettyPrint::ansi_color = 1;
 }
 
+my $planet_name;
 my $opt_update_yml = 0;
 GetOptions(
+    'planet=s' => \$planet_name,
     'c|color!' => \$Games::Lacuna::Client::PrettyPrint::ansi_color,
     'u|update' => \$opt_update_yml,
 );
@@ -47,6 +49,8 @@ my %planets = map { $empire->{planets}{$_}, $_ } keys %{ $empire->{planets} };
 # Scan each planet
 my %all_glyphs;
 foreach my $name ( sort keys %planets ) {
+
+    next if defined $planet_name && $planet_name ne $name;
 
     # Load planet data
     my $planet    = $client->body( id => $planets{$name} );
@@ -377,6 +381,61 @@ Functional Recipes:
     quantity:
       chalcopyrite: 1
       sulfur: 1
+  Halls of Vrbansk (A):
+    order:
+      - goethite
+      - halite
+      - gypsum
+      - trona
+    quantity:
+      goethite: 1
+      halite: 1
+      gypsum: 1
+      trona: 1
+  Halls of Vrbansk (B):
+    order:
+      - gold
+      - anthracite
+      - uraninite
+      - bauxite
+    quantity:
+      gold: 1
+      anthracite: 1
+      uraninite: 1
+      bauxite: 1
+  Halls of Vrbansk (C):
+    order:
+      - kerogen
+      - methane
+      - sulfur
+      - zircon
+    quantity:
+      kerogen: 1
+      methane: 1
+      sulfur: 1
+      zircon: 1
+  Halls of Vrbansk (D):
+    order:
+      - monazite
+      - fluorite
+      - beryl
+      - magnetite
+    quantity:
+      monazite: 1
+      fluorite: 1
+      beryl: 1
+      magnetite: 1
+  Halls of Vrbasnk (E):
+    order:
+      - rutile
+      - chromite
+      - chalcopyrite
+      - galena
+    quantity:
+      rutile: 1
+      chromite: 1
+      chalcopyrite: 1
+      galena: 1
   Interdimensional Rift:
     order:
       - methane

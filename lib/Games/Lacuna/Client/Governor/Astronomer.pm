@@ -20,6 +20,7 @@ use Data::Dumper;
     use Games::Lacuna::Client::PrettyPrint qw(trace message warning action ptime phours);
     my $PROBES_PER_PAGE = 25;
     my $SHIPS_PER_PAGE = 25;
+    my $PROBES_PER_LVL = 3;
 
     sub run {
         my $class   = shift;
@@ -46,6 +47,7 @@ use Data::Dumper;
 
         ### Now find Spaceports.
         my (@spaceports) = $gov->find_buildings('SpacePort');
+        my @all_probes;
         my @ships;
         my @traveling;
         my @probe_to_port;
@@ -54,6 +56,7 @@ use Data::Dumper;
             while( $page <= 4 ){
                 $page++;
                 my $data = $sp->view_all_ships($page);
+                push @all_probes, grep { $_->{type} eq 'probe' } @{$data->{ships}};
                 push @ships, grep { $_->{task} eq 'Docked' and $_->{type} eq 'probe' } @{$data->{ships}};
                 push @probe_to_port, map {; $_->{id} => $sp } @ships;
                 push @traveling, grep { $_->{task} eq 'Travelling' and $_->{type} eq 'probe' } @{$data->{ships}};
@@ -61,25 +64,6 @@ use Data::Dumper;
             }
         }
 
-#        ### Now find Shipyards.
-#        my (@shipyards) = $gov->find_buildings('Shipyard');
-#        my @yard_queue;
-#        for my $yard ( @shipyards ){
-#            my $page = 0;
-#            while( $page <= 4 ){
-#                $page++;
-#                my $yard_queue = $yard->view_build_queue($page);
-#                push @yard_queue, $yard_queue;
-#                last if $page * $SHIPS_PER_PAGE >= $yard_queue->{number_of_ships_building};
-#            }
-#        }
-
-
-
-#        $gov->{_observatory_plugin}{yards}{$pid} = {
-#            yards => \@shipyards,
-#            queue => \@yard_queue,
-#        };
         $gov->{_observatory_plugin}{ports}{$pid} = {
             ports => \@spaceports,
             docked => \@ships,
@@ -87,7 +71,7 @@ use Data::Dumper;
             probe2port => { @probe_to_port },
         };
         $gov->{_observatory_plugin}{stars}{$pid} = {
-            observatory => $observatory,
+            observ_id   => $observatory->{building_id},
             stars       => \@stars,
         };
 
@@ -213,11 +197,7 @@ use Data::Dumper;
             }
         }
 
-        if( not any {
-                my $o = $gov->{_observatory_plugin}{stars}{$_}{observatory};
-                $o->{max_probes} - $o->{star_count} > 0;
-            } @pids
-        ){
+        if( not any { $class->can_observe($gov, $_); } @pids ){
             trace("All observatories are capped, aborting.");
             return;
         }
@@ -238,8 +218,16 @@ use Data::Dumper;
         ### Determine star distances from Colonies.
         my (%planet_distances);
         my %pid_loc = map { $_ => [@{$gov->{status}{$_}}{qw(x y)}]; } keys %{$gov->{status}{empire}{planets}};
+        PLANET:
         while( my ($pid, $planet_xy) = each %pid_loc ){
             my ($planet_x, $planet_y) = @$planet_xy;
+            if( not defined $planet_x or not defined $planet_y ){
+                warning(
+                    sprintf "Unable to determine origin of planet %s, x y coords missing",
+                        $gov->{status}{empire}{planets}{$pid}
+                );
+                next PLANET;
+            }
             foreach my $star ( values %valid_target_stars ){
                 my ($star_x, $star_y) = @{$star}{qw(x y)};
                 my $dist = sqrt( ($star_x - $planet_x)**2 + ($star_y - $planet_y)**2 );
@@ -261,6 +249,17 @@ use Data::Dumper;
         $class->search_and_scan($gov, \%planet_distances, \%distances_by_planet);
 
         return;
+    }
+
+    sub can_observe {
+        my $class   = shift;
+        my $gov     = shift;
+        my $pid     = shift;
+        my $oid = $gov->{_observatory_plugin}{stars}{$pid}{observ_id};
+        my $o   = $gov->building_details($pid, $oid);
+        my $max_probes      = $o->{level} * $PROBES_PER_LVL;
+        my $active_probes   = scalar @{$gov->{_observatory_plugin}{stars}{$pid}{stars}};
+        return $max_probes - $active_probes > 0;
     }
 
     sub search_and_scan {
@@ -357,6 +356,14 @@ This module examines each colony and the probes currently available (as well as 
 to determine what stars the available probes should be sent to. It is a fast-and-dirty first-fit
 algorithm, intended merely do expand the observatory's scan in an every increasing radius.
 
+This module looks for the build_probes colony-level configuration key in the governor config.
+If it's a positive number, and there are fewer than that number of probes currently in any
+state at the SpacePort of the given body, then it will attempt to build probes to make up
+the difference.
+
+NOTE: Having ships auto-build can cause ship loss if it happens when you don't expect it, and you
+push ships to a location where a probe build is later initiated.  Be careful!
+
 =head1 DEPENDENCIES
 
 Depends on internet access to download the static stars listing. If this is not available,
@@ -365,9 +372,9 @@ on how this information is used.
 
 =head1 SEE ALSO
 
-Games::Lacuna::Client, by Steffen Mueller on which this module is dependent.
+L<Games::Lacuna::Client>, by Steffen Mueller on which this module is dependent.
 
-Games::Lacuna::Client::Governor, by Adam Bellaire of which this module is a plugin.
+L<Games::Lacuna::Client::Governor>, by Adam Bellaire of which this module is a plugin.
 
 Of course also, the Lacuna Expanse API docs themselves at L<http://us1.lacunaexpanse.com/api>.
 
