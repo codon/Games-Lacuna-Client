@@ -60,10 +60,10 @@ my %planets_by_name = map { ($estatus->{planets}->{$_} => $client->body(id => $_
 
 my @wrs;
 foreach my $planet (values %planets_by_name) {
-    my %buildings = %{ $planet->get_buildings->{buildings} };
+    my $buildings = $planet->get_buildings->{buildings};
 
-    my @waste_ids = grep {$buildings{$_}{name} eq 'Waste Recycling Center'}
-    keys %buildings;
+    my @waste_ids = grep { $buildings->{$_}{name} eq 'Waste Recycling Center' }
+    keys %$buildings;
     push @wrs, map  { $client->building(type => 'WasteRecycling', id => $_) } @waste_ids;
 }
 
