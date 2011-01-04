@@ -77,7 +77,7 @@ foreach my $iwr (0 .. $#wrs) {
         $wr_timers[$iwr] = AnyEvent->timer(
             after => $wait_sec,
             cb    => sub {
-                output("Waited for $wait_sec on WR $iwr");
+                output("Waited for $wait_sec on WR @{[ $wr->view()->{status}{body}{name} ]} [$iwr]");
                 $wr_handlers[$iwr]->()
             },
         );
@@ -123,6 +123,7 @@ sub update_wr {
 
     output("checking WR stats for WR $iwr");
     my $wr_stat = $wr->view;
+    output("WR $iwr: $wr_stat->{status}{body}{name}");
 
     my $busy_seconds = $wr_stat->{building}{work}{seconds_remaining};
     if ($busy_seconds) {
