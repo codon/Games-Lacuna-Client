@@ -39,12 +39,12 @@ my $client = Games::Lacuna::Client->new(
 
 my $program_exit = AnyEvent->condvar;
 my $int_watcher = AnyEvent->signal(
-        signal => "INT",
-        cb => sub {
+    signal => "INT",
+    cb => sub {
         output("Interrupted!");
         undef $client;
         exit(1);
-        }
+    }
 );
 
 #my $res = $client->alliance->find("The Understanding");
@@ -69,18 +69,18 @@ foreach my $planet (values %planets_by_name) {
 
 my @wr_handlers;
 my @wr_timers;
-foreach my $iwr (0..$#wrs) {
+foreach my $iwr (0 .. $#wrs) {
     my $wr = $wrs[$iwr];
     push @wr_handlers, sub {
         my $wait_sec = update_wr($wr, $iwr);
         return if not $wait_sec;
         $wr_timers[$iwr] = AnyEvent->timer(
-                after => $wait_sec,
-                cb    => sub {
+            after => $wait_sec,
+            cb    => sub {
                 output("Waited for $wait_sec on WR $iwr");
                 $wr_handlers[$iwr]->()
-                },
-                );
+            },
+        );
     };
 }
 
