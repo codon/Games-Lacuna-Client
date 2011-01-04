@@ -138,7 +138,7 @@ sub update_wr {
 
     if (not $waste or $waste < $min_waste) {
         output("(virtually) no waste has accumulated, waiting");
-        return 5*MINUTE;
+        return $TimePerIteration;
     }
 
     my $sec_per_waste = $wr_stat->{recycle}{seconds_per_resource};
@@ -207,13 +207,13 @@ sub update_wr {
         eval {
             $wr->recycle(int($water), int($ore), int($energy), 0);
         };
-        output("Recycling failed: $@"), return(1*MINUTE) if $@;
+        output("Recycling failed: $@"), return($TimePerIteration) if $@;
         output("Waiting for recycling job to finish");
         return int($rec_waste*$sec_per_waste)+3;
     }
     else {
         output("Choosing not to recycle right this moment. -- It would put us below $min_waste waste threshold.");
-        return 5*MINUTE;
+        return $TimePerIteration;
     }
 
 }
