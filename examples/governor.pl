@@ -6,17 +6,20 @@ use lib "$FindBin::Bin/../lib";
 use Games::Lacuna::Client::Governor;
 use Games::Lacuna::Client;
 use YAML::Any;
+use Getopt::Long;
 
 $| = 1;
 
-my $cfg_file = shift(@ARGV) || 'lacuna.yml';
-unless ( $cfg_file and -e $cfg_file ) {
-            die "Did not provide a config file";
-}
+my $client_config   = '';
+my $governor_config = '';
 
-my $governor_config = shift(@ARGV) || 'governor.yml';
-unless ( $governor_config and -e $governor_config ) {
-            die "Did not provide a config file";
+GetOptions(
+    'client|c=s' => \$client_config,
+    'governor|g=s' => \$governor_config,
+);
+
+unless ($client_config && $governor_config) {
+    die usage();
 }
 
 my $client = Games::Lacuna::Client->new(
@@ -35,3 +38,11 @@ $governor->run( defined $arg and $arg eq 'refresh' );
 printf "%d total RPC calls this run.\n", $client->{total_calls};
 
 exit;
+
+sub usage {
+    return qq{
+    $0 <options>
+        OPTIONS:
+            -g, --governor      path to governor.yml
+            -c, --client        path to client.yml\n};
+}
