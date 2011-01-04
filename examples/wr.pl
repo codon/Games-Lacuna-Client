@@ -2,6 +2,7 @@
 use strict;
 use warnings;
 use 5.010000;
+use feature ':5.10';
 use FindBin;
 use lib "$FindBin::Bin/../lib";
 use Games::Lacuna::Client;
@@ -16,10 +17,11 @@ our $TimePerIteration = 10;
 
 my $min_waste = 1000;
 
-my $balanced = 0;
+my $balanced = my $rate = 0;
 GetOptions(
         'i|interval=f' => \$TimePerIteration,
         'b|balanced!'  => \$balanced,
+        'r|rate!'      => \$rate,
         'm|minwaste=i' => \$min_waste,
         );
 $TimePerIteration = int($TimePerIteration * MINUTE);
@@ -133,7 +135,7 @@ sub update_wr {
 
     output("Checking resource stats");
     my $pstatus = $wr_stat->{status}{body} or die "Could not get planet status via \$struct->{status}{body}: " . Dumper($wr_stat);
-    my $waste_per_hour = $wr_stat->{status}{body}{waste_hour};
+    my $waste_per_hour = $pstatus->{waste_hour};
     my $waste = $pstatus->{waste_stored};
 
     if (not $waste or $waste < $min_waste) {
@@ -155,6 +157,10 @@ sub update_wr {
     my $water_s  = $pstatus->{water_stored};
     my $energy_s = $pstatus->{energy_stored};
 
+    my $ore_r    = $pstatus->{ore_hour};
+    my $water_r  = $pstatus->{water_hour};
+    my $energy_r = $pstatus->{energy_hour};
+
     # produce boolean = capacity > stored + 1
     my $produce_ore    = $ore_c > $ore_s+1;
     my $produce_water  = $water_c > $water_s+1;
@@ -172,8 +178,32 @@ sub update_wr {
     my $water = 0;
     my $energy = 0;
 
-
-    if (not $balanced) {
+    if ( $rate ) {
+        # get the name of our resource with the lowest production
+        my ($resource) = sort { $pstatus->{"${a}_hour"} <=> $pstatus->{"${b}_hour"} } qw( ore water energy );
+        given ($resource) {
+            when ('ore') {
+                output('spending it all on ore');
+                $ore = $rec_waste;
+            }
+            when ('water') {
+                output('spending it all on water');
+                $water = $rec_waste;
+            }
+            when ('energy') {
+                output('spending it all on energy');
+                $energy = $rec_waste;
+            }
+        }
+    }
+    elsif ( $balanced ) {
+        # if balanced is set, just divide evenly
+        output('spending as evenly as possible');
+        $ore    = $rec_waste * (1 / $produce_count) if $produce_ore;
+        $water  = $rec_waste * (1 / $produce_count) if $produce_water;
+        $energy = $rec_waste * (1 / $produce_count) if $produce_energy;
+    }
+    else {
         # otherwise, spend 100% on the lowest resource that won't go over capacity
         if ($ore_s < $water_s && $ore_s < $energy_s && $ore_s + $rec_waste < $ore_c) {
             # if ore is less than water and energy and we won't cap it
@@ -190,13 +220,6 @@ sub update_wr {
         }
     }
 
-    if ($ore == 0 && $water == 0 && $energy == 0 ) {
-        # if balanced is set, just divide evenly
-        output('spending as evenly as possible');
-        $ore    = $rec_waste * (1 / $produce_count) if $produce_ore;
-        $water  = $rec_waste * (1 / $produce_count) if $produce_water;
-        $energy = $rec_waste * (1 / $produce_count) if $produce_energy;
-    }
 
     # TODO warn if we aren't keeping pace
     output("WARNING!!! WASTE RECYCLER NOT KEEPING PACE WITH WASTE PER HOUR!!!") if ((60 * 60) / $sec_per_waste < $waste_per_hour);
