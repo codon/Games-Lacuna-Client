@@ -192,7 +192,7 @@ while (1) {
     next;
   }
  
-  output("Waiting for next iteration");
+  output("Waiting for next iteration [$TimePerIteration]");
   sleep $TimePerIteration;
 }
 
