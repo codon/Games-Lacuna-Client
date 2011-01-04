@@ -19,7 +19,7 @@ my $min_waste = 1000;
 my $balanced = 0;
 GetOptions(
         'i|interval=f' => \$TimePerIteration,
-        'b|balanced=i' => \$balanced,
+        'b|balanced!'  => \$balanced,
         'm|minwaste=i' => \$min_waste,
         );
 $TimePerIteration = int($TimePerIteration * MINUTE);
