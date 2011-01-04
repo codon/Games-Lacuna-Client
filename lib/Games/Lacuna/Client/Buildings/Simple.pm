@@ -62,6 +62,7 @@ our @BuildingTypes = (qw(
     OreRefinery
     Oversight
     Pancake
+    PantheonOfHagness
     Pie
     PilotTraining
     Potato
