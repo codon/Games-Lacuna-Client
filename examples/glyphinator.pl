@@ -48,15 +48,16 @@ GetOptions(\%opts,
     'create-db',
     'config=s',
     'planet=s@',
-    'do-digs',
+    'do-digs|dig',
     'min-ore=i',
     'min-arch=i',
-    'preferred-ore=s@',
-    'send-excavators',
-    'max-excavators=i',
+    'preferred-ore|ore=s@',
+    'send-excavators|send',
+    'max-excavators|max=i',
     'min-dist=i',
     'max-dist=i',
-    'dry-run',
+    'furthest-first|furthest',
+    'dry-run|dry',
 );
 
 usage() if $opts{h};
@@ -199,7 +200,7 @@ sub get_status {
             my $buildable = $yard->get_buildable->{buildable};
 
             if (!$buildable->{excavator}->{can} and $buildable->{excavator}->{reason}->[0] eq '1013') {
-                verbose("$planet_name is not able to build excavators yet.\n");
+                verbose("This shipyard on $planet_name is not able to build excavators yet.\n");
                 next;
             }
 
@@ -443,7 +444,9 @@ sub find_shipyards {
     # Find the Shipyards
     my @yard_ids = grep {
             $buildings->{$_}->{name} eq 'Shipyard'
-    } keys %$buildings;
+    }
+    grep { $buildings->{$_}->{level} > 0 }
+    keys %$buildings;
 
     return if not @yard_ids;
     return map { $glc->building(id => $_, type => 'Shipyard') } @yard_ids;
@@ -455,7 +458,9 @@ sub find_spaceport {
     # Find a Spaceport
     my $port_id = first {
             $buildings->{$_}->{name} eq 'Space Port'
-    } keys %$buildings;
+    }
+    grep { $buildings->{$_}->{level} > 0 }
+    keys %$buildings;
 
     return if not $port_id;
     return $glc->building(id => $port_id, type => 'Spaceport');
@@ -656,38 +661,56 @@ sub pick_destination {
     my $base_x = $status->{planet_location}{$planet}{x};
     my $base_y = $status->{planet_location}{$planet}{y};
 
+    # Compute box size based on specified max hypotenuse
+    $args{min_dist} ||= 0;
     $args{max_dist} ||= 3000;
-    my $real_min = $args{min_dist} ? int(sqrt($args{min_dist} * $args{min_dist} / 2)) : 0;
-    my $real_max = $args{max_dist} ? int(sqrt($args{max_dist} * $args{max_dist} / 2)) : 0;
+    my $box_min = $args{min_dist} ? int(sqrt($args{min_dist} * $args{min_dist} / 2)) : 0;
+    my $box_max = int(sqrt($args{max_dist} * $args{max_dist} / 2));
+    my $max_squared = $args{max_dist} * $args{max_dist};
+    my $min_squared = $args{min_dist} * $args{min_dist};
 
     my $count       = $args{count} || 1;
-    my $current_max = $real_min;
+    my $current_min = $box_max;
+    my $current_max = $box_min;
     my $skip        = $args{skip} || [];
 
-    my @results;
-    while (@results < $count and (!$real_max or $current_max < $real_max)) {
-        my $current_min = $current_max;
-        $current_max += 100;
-        $current_max = $real_max
-            if $real_max and $current_max > $real_max;
-        verbose("Increasing box size, max is $current_max, min is $current_min\n");
+    my $furthest = $opts{'furthest-first'};
 
+    my @results;
+    while (@results < $count and ($furthest ? $current_min > 0 : $current_max < $box_max)) {
+        if ($furthest) {
+            $current_max = $current_min;
+            $current_min -= 100;
+            $current_min = 0 if $current_min < 0;
+            verbose("Decreasing box size, max is $current_max, min is $current_min\n");
+        } else {
+            $current_min = $current_max;
+            $current_max += 100;
+            $current_max = $box_max if $current_max > $box_max;
+            verbose("Increasing box size, max is $current_max, min is $current_min\n");
+        }
+
+        # This would be better using SQLite's R*Tree support, but DBD::SQLite doesn't
+        # support that yet, so we can't
         my $skip_sql = '';
         if (@$skip) {
             $skip_sql = "and s.name || ' ' || o.orbit not in (" . join(',',map { '?' } 1..@$skip) . ")";
         }
-        my $inner_box = $current_min > 0 ? 'and o.x not between ? and ? and o.y not between ? and ?' : '';
+        my $inner_box = $current_min > 0 ? 'and not (o.x between ? and ? and o.y between ? and ?)' : '';
+        my $order = $opts{'furthest-first'} ? 'desc' : 'asc';
         my $find_dest = $star_db->prepare(<<SQL);
 select   s.name, o.orbit, o.x, o.y, (o.x - ?) * (o.x - ?) + (o.y - ?) * (o.y - ?) as dist
 from     orbitals o
 join     stars s on o.star_id = s.id
-where    (type in ('planet', 'asteroid') or type is null)
+where    (type in ('habitable planet', 'asteroid', 'gas giant') or type is null)
 and      (last_excavated is null or date(last_excavated) < date('now', '-30 days'))
 and      o.x between ? and ?
 and      o.y between ? and ?
+and      dist <= $max_squared
+and      dist >= $min_squared
 $inner_box
 $skip_sql
-order by dist asc
+order by dist $order
 limit    $count
 SQL
 
@@ -808,6 +831,7 @@ Options:
   --max-excavators <n>   - Send at most this number of excavators from any colony
   --min-dist <n>         - Minimum distance to send excavators
   --max-dist <n>         - Maximum distance to send excavators
+  --furthest-first       - Select the furthest away rather than the closest
   --dry-run              - Don't actually take any action, just report status and
                            what actions would have taken place.
 END
