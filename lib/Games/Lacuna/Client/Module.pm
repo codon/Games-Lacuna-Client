@@ -74,7 +74,7 @@ sub _generate_method_per_spec {
     ];
     
     if ($client->debug) {
-      print "DEBUG: " . __PACKAGE__ . " request " . Data::Dumper::Dumper(\@call_params);
+      print "DEBUG: " . __PACKAGE__ . " request $method_name" . Data::Dumper::Dumper($params);
     }
     my $ret = $client->rpc->call($self->uri, $method_name, $params);
     if ($client->debug) {

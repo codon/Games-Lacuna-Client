@@ -18,11 +18,15 @@ our $TimePerIteration = 10;
 my $min_waste = 1000;
 
 my $balanced = my $rate = 0;
+my ($water_perc, $energy_perc, $ore_perc) = (0, 0, 0);
 GetOptions(
         'i|interval=f' => \$TimePerIteration,
         'b|balanced!'  => \$balanced,
         'r|rate!'      => \$rate,
         'm|minwaste=i' => \$min_waste,
+        'water=i'      => \$water_perc,
+        'ore=i'        => \$ore_perc,
+        'energy=i'     => \$energy_perc,
         );
 $TimePerIteration = int($TimePerIteration * MINUTE);
 
