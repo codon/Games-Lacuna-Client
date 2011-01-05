@@ -55,7 +55,9 @@ foreach my $planet_id ( sort keys %$planets ) {
     print "=" x length $name;
     print "\n";
 
-    for my $building (@build) {
+    for my $building (
+            sort { $a->{pending_build}{seconds_remaining} <=> $b->{pending_build}{seconds_remaining} }
+            @build) {
         printf "%s: %s\n",
             $building->{name},
             scalar localtime( time + $building->{pending_build}{seconds_remaining} );
