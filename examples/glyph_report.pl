@@ -56,7 +56,7 @@ foreach my $name ( sort keys %planets ) {
     my $planet    = $client->body( id => $planets{$name} );
     my $result    = $planet->get_buildings;
     my $body      = $result->{status}->{body};
-    
+
     my $buildings = $result->{buildings};
 
     # Find the Archaeology Ministry
@@ -65,24 +65,24 @@ foreach my $name ( sort keys %planets ) {
     } keys %$buildings;
 
     next if not $arch_id;
-    
+
     my $arch   = $client->building( id => $arch_id, type => 'Archaeology' );
     my $glyphs = $arch->get_glyphs->{glyphs};
-    
+
     next if !@$glyphs;
-    
+
     printf "%s\n", $name;
     print "=" x length $name;
     print "\n";
-    
+
     @$glyphs = sort { $a->{type} cmp $b->{type} } @$glyphs;
-    
+
     for my $glyph (@$glyphs) {
         $all_glyphs{$glyph->{type}} = 0 if not $all_glyphs{$glyph->{type}};
         $all_glyphs{$glyph->{type}}++;
         printf "%s\n", ucfirst( $glyph->{type} );
     }
-    
+
     print "\n";
 }
 
@@ -133,7 +133,7 @@ sub creation_summary {
                 if(not $Games::Lacuna::Client::PrettyPrint::ansi_color) {
                     $no_color_ask = $remaining{$glyph}{$ordered} ? '*' : '';
                 }
-                $segment .= sprintf qq{%-15s}, $ordered . ($no_color_ask );
+                $segment .= sprintf qq{%-15s}, $ordered . ' (' . ($contents{$ordered} || 0) . ')' . ($no_color_ask );
                 $segment .= _c_('reset');
                 push @out, $segment;
             }

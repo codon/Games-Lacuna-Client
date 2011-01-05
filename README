@@ -8,6 +8,7 @@ The following CPAN modules are required to use the example scripts:
 * MooseX
 * JSON::RPC::Common
 * AnyEvent
+* Number::Format
 * Crypt::SSLeay
 * Hash::Merge
 * Number::Format

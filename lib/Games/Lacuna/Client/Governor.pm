@@ -1100,14 +1100,6 @@ sub upgrade_cost {
     return sum(@{$hash}{qw(food ore water energy waste)});
 }
 
-sub food_types {
-    return qw(algae apple bean beetle bread burger chip cider corn fungus lapis meal milk pancake pie potato root shake soup syrup wheat);
-}
-
-sub ore_types {
-    return qw(anthracite bauxite beryl chalcopyrite chromite fluorite galena goethite gold gypsum halite kerogen magnetite methane monazite rutile sulfur trona uraninite zircon);
-}
-
 1;
 
 __END__
