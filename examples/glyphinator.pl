@@ -56,6 +56,7 @@ GetOptions(\%opts,
     'max-excavators|max=i',
     'min-dist=i',
     'max-dist=i',
+    'zone=s',
     'safe-zone-ok',
     'inhabited-ok',
     'furthest-first|furthest',
@@ -195,9 +196,19 @@ sub get_status {
 
             push @{$status->{flying}},
                 map {
+                    $_->{distance} = int(($_->{arrives} - $_->{departed}) * $_->{speed} / 360000);
+                    $_->{remaining} = int(($_->{arrives} - time()) * $_->{speed} / 360000);
+                    $_
+                }
+                map {
                     {
                         planet      => $planet_name,
                         destination => $_->{to}{name},
+                        speed       => $_->{speed},
+                        departed    => str2time(
+                            map { s!^(\d+)\s+(\d+)\s+!$2/$1/!; $_ }
+                            $_->{date_started}
+                        ),
                         arrives     => str2time(
                             map { s!^(\d+)\s+(\d+)\s+!$2/$1/!; $_ }
                             $_->{date_arrives}
@@ -219,7 +230,7 @@ sub get_status {
             verbose("No spaceport on $planet_name\n");
         }
 
-        if ($status->{archlevel}{$planet_name} >= 15) {
+        if ($status->{archlevel}{$planet_name} and $status->{archlevel}{$planet_name} >= 15) {
             my @shipyards = find_shipyards($buildings);
             verbose("No shipyards on $planet_name\n") unless @shipyards;
             for my $yard (@shipyards) {
@@ -344,7 +355,7 @@ END
     for my $ship (@{$status->{flying}}) {
         push @events, {
             epoch  => $ship->{arrives},
-            detail => "Excavator from $ship->{planet} arriving at $ship->{destination}",
+            detail => "Excavator from $ship->{planet} arriving at $ship->{destination} ($ship->{distance} units, $ship->{remaining} left)",
         };
     }
     @events =
@@ -454,7 +465,9 @@ sub find_arch_min {
     # Find the Archaeology Ministry
     my $arch_id = first {
             $buildings->{$_}->{name} eq 'Archaeology Ministry'
-    } keys %$buildings;
+    }
+    grep { $buildings->{$_}->{level} > 0 }
+    keys %$buildings;
 
     return if not $arch_id;
 
@@ -590,9 +603,7 @@ sub send_excavators {
             : $status->{ready}{$planet};
 
         my @dests = pick_destination($planet,
-            count    => $count,
-            min_dist => $opts{'min-dist'} || undef,
-            max_dist => $opts{'max-dist'} || undef,
+            count => $count,
         );
 
         if (@dests < $count) {
@@ -661,6 +672,10 @@ sub send_excavators {
                             {
                                 planet      => $planet,
                                 destination => $launch_status->{ship}{to}{name},
+                                speed       => $ex->{speed},
+                                distance    => $distance,
+                                remaining   => $distance,
+                                departed    => time(),
                                 arrives     => str2time(
                                     map { s!^(\d+)\s+(\d+)\s+!$2/$1/!; $_ }
                                     $launch_status->{ship}{date_arrives}
@@ -682,10 +697,8 @@ sub send_excavators {
             # actually tried yet and get duplicates
             if ($need_more) {
                 @dests = pick_destination($planet,
-                    count    => $need_more,
-                    min_dist => $opts{'min-dist'} || undef,
-                    max_dist => $opts{'max-dist'} || undef,
-                    skip     => [keys %skip],
+                    count => $need_more,
+                    skip  => [keys %skip],
                 );
             } else {
                 $all_done = 1;
@@ -704,12 +717,12 @@ sub pick_destination {
     my $base_y = $status->{planet_location}{$planet}{y};
 
     # Compute box size based on specified max hypotenuse
-    $args{min_dist} ||= 0;
-    $args{max_dist} ||= 3000;
-    my $box_min = $args{min_dist} ? int(sqrt($args{min_dist} * $args{min_dist} / 2)) : 0;
-    my $box_max = int(sqrt($args{max_dist} * $args{max_dist} / 2));
-    my $max_squared = $args{max_dist} * $args{max_dist};
-    my $min_squared = $args{min_dist} * $args{min_dist};
+    my $min_dist = $opts{'min-dist'} || 0;
+    my $max_dist = $opts{'max-dist'} || 3000;
+    my $box_min = $min_dist ? int(sqrt($min_dist * $min_dist / 2)) : 0;
+    my $box_max = int(sqrt($max_dist * $max_dist / 2));
+    my $max_squared = $max_dist * $max_dist;
+    my $min_squared = $min_dist * $min_dist;
 
     my $count       = $args{count} || 1;
     my $current_min = $box_max;
@@ -741,6 +754,7 @@ sub pick_destination {
         my $inner_box = $current_min > 0 ? 'and not (o.x between ? and ? and o.y between ? and ?)' : '';
         my $safe_zone = $opts{'safe-zone-ok'} ? '' : q{and (s.zone is null or s.zone != '-3|0')};
         my $inhabited = $opts{'inhabited-ok'} ? '' : q{and o.empire_id is null};
+        my $zone      = $opts{'zone'} ? 'and zone = ?' : '';
         my $order     = $opts{'furthest-first'} ? 'desc' : 'asc';
         my $find_dest = $star_db->prepare(<<SQL);
 select   s.name, o.orbit, o.x, o.y, s.zone, (o.x - ?) * (o.x - ?) + (o.y - ?) * (o.y - ?) as dist
@@ -748,14 +762,15 @@ from     orbitals o
 join     stars s on o.star_id = s.id
 where    (type in ('habitable planet', 'asteroid', 'gas giant') or type is null)
 and      (last_excavated is null or date(last_excavated) < date('now', '-30 days'))
-$safe_zone
-$inhabited
 and      o.x between ? and ?
 and      o.y between ? and ?
 and      dist <= $max_squared
 and      dist >= $min_squared
-$inner_box
 $skip_sql
+$safe_zone
+$inhabited
+$zone
+$inner_box
 order by dist $order
 limit    $count
 SQL
@@ -767,7 +782,11 @@ SQL
             $base_x + $current_max,
             $base_y - $current_max,
             $base_y + $current_max,
+            @$skip,
         );
+        if ($opts{zone}) {
+            push @vals, $opts{zone};
+        }
         if ($current_min > 0) {
             push @vals,
                 $base_x - $current_min,
@@ -775,7 +794,6 @@ SQL
                 $base_y - $current_min,
                 $base_y + $current_min,
         }
-        push @vals, @$skip;
 
         $find_dest->execute(@vals);
         while (my $row = $find_dest->fetchrow_hashref) {
@@ -883,6 +901,7 @@ Options:
   --max-excavators <n>   - Send at most this number of excavators from any colony
   --min-dist <n>         - Minimum distance to send excavators
   --max-dist <n>         - Maximum distance to send excavators
+  --zone <id>            - Specify a particular zone to send to, if possible
   --safe-zone-ok         - Ok to send excavators to -3|0, the neutral zone
   --inhabited-ok         - Ok to send excavators to inhabited planets
   --furthest-first       - Select the furthest away rather than the closest
