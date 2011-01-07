@@ -223,7 +223,7 @@ $star_db->do('vacuum');
 
 output("$db_file is now up-to-date with your probe data\n");
 
-output("$glc->{total_calls} api calls made.\n");
+output("$glc->{total_calls} api calls made.\n") if $glc->{total_calls};
 undef $glc;
 exit 0;
 
@@ -369,6 +369,9 @@ SQL
         <<SQL,
 CREATE INDEX orbital_x_y on orbitals(x,y)
 SQL
+        <<SQL,
+CREATE INDEX zone on stars(zone)
+SQL
 }
 
 sub upgrade_star_db {
@@ -376,23 +379,27 @@ sub upgrade_star_db {
     my @tests = (
         [
             'select zone from stars limit 1',
-            'alter table stars add zone text',
+            [
+                'alter table stars add zone text',
+                'create index zone on stars(zone)',
+                q{update stars set zone = cast(x/250 as text) || '|' || cast(y/250 as text) where zone is null},
+            ],
         ],
         [
             'select name from orbitals limit 1',
-            'alter table orbitals add name text',
+            ['alter table orbitals add name text'],
         ],
         [
             'select empire_id from orbitals limit 1',
-            'alter table orbitals add empire_id int',
+            ['alter table orbitals add empire_id int'],
         ],
         [
             'select last_checked from orbitals limit 1',
-            'alter table orbitals add last_checked datetime',
+            ['alter table orbitals add last_checked datetime'],
         ],
         [
             'select last_checked from stars limit 1',
-            'alter table stars add last_checked datetime',
+            ['alter table stars add last_checked datetime'],
         ],
     );
 
@@ -405,11 +412,17 @@ sub check_and_upgrade {
 
     # Test each new element and migrate as necessary
     my $ok = eval {
+        return 0 unless defined $check;
+        verbose("Running test SQL: $check\n");
         $star_db->do($check);
         return 1;
     };
     unless ($ok) {
-        $star_db->do($upgrade_sql);
+        verbose("Test failed, performing update(s)\n");
+        for (@$upgrade_sql) {
+            verbose("Running update SQL: $_\n");
+            $star_db->do($_);
+        }
     }
 }
 
