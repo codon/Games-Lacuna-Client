@@ -39,36 +39,36 @@ foreach my $name ( sort keys %planets ) {
     my $planet    = $client->body( id => $planets{$name} );
     my $result    = $planet->get_buildings;
     my $body      = $result->{status}->{body};
-    
+
     my $buildings = $result->{buildings};
 
     # Find the PPC
     my $ppc_id = first {
             $buildings->{$_}->{name} eq 'Planetary Command Center'
     } keys %$buildings;
-    
+
     my $ppc   = $client->building( id => $ppc_id, type => 'PlanetaryCommand' );
     my $plans = $ppc->view_plans->{plans};
-    
+
     next if !@$plans;
-    
-    printf "%s\n", $name;
+
+    printf "%s (%d plans)\n", $name, scalar @$plans;
     print "=" x length $name;
     print "\n";
-    
+
     my $max_length = max map { length $_->{name} } @$plans;
-    
+
     for my $plan (@$plans) {
         printf "%${max_length}s, level %d",
             $plan->{name},
             $plan->{level};
-        
+
         if ( $plan->{extra_build_level} ) {
-            printf "extra build level %d", $plan->{extra_build_level};
+            printf "+%d", $plan->{extra_build_level};
         }
-        
+
         print "\n";
     }
-    
+
     print "\n";
 }
