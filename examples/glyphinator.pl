@@ -70,7 +70,6 @@ GetOptions(\%opts,
 
     # Excavator options
     'db=s',
-    'create-db',
     'send-excavators|send',
     'and'                     => $batch_opt_cb,
     'max-excavators|max=s'    => $batch_opt_cb,
@@ -94,6 +93,7 @@ my $glc = Games::Lacuna::Client->new(
     cfg_file => $opts{config} || "$FindBin::Bin/../lacuna.yml",
 );
 
+my $star_util = "$FindBin::Bin/star_db_util.pl";
 no warnings 'once';
 my $db_file = $opts{db} || "$FindBin::Bin/../stars.db";
 my $star_db;
@@ -103,18 +103,9 @@ if (-f $db_file) {
     $star_db->{RaiseError} = 1;
     $star_db->{PrintError} = 0;
 } else {
-    if ($opts{'create-db'}) {
-        $star_db = DBI->connect("dbi:SQLite:$db_file")
-            or die "Can't create star database $db_file: $DBI::errstr\n";
-        for my $sql (create_star_db_sql()) {
-            $star_db->do($sql);
-        }
-        output("$db_file initialized\n");
-    } else {
-        warn "No star database found.  Specify it with --db or use --create-db to create it.\n";
-        if ($opts{'send-excavators'}) {
-            warn "Can't send excavators without star database!\n";
-        }
+    warn "No star database found.  Specify it with --db or use $star_util --create-db to create it.\n";
+    if ($opts{'send-excavators'}) {
+        warn "Can't send excavators without star database!\n";
     }
 }
 if ($star_db) {
@@ -124,7 +115,8 @@ if ($star_db) {
         diag("Star database is empty!\n");
         $star_db = undef;
     }
-
+}
+if ($star_db) {
     my $ok = eval {
         $star_db->do('select zone from stars limit 1');
         return 1;
@@ -132,7 +124,7 @@ if ($star_db) {
     unless ($ok) {
         my $e = $@;
         if ($e =~ /no such column/) {
-            die "Database needs an upgrade, please run star_db_util.pl --upgrade\n";
+            die "Database needs an upgrade, please run $star_util --upgrade\n";
         } else {
             die $e;
         }
@@ -606,12 +598,22 @@ sub determine_ore {
 
 ## Excavators ##
 
+my %attack_ships;
+BEGIN {
+    %attack_ships = map { $_ => 1 } qw/
+        bleeder observatory_seeker spaceport_seeker
+        placebo placebo2 placebo3 placebo4 placebo5 placebo6
+        scow security_ministry_seeker
+        snark snark2 snark3 spy_pod spy_shuttle sweeper thud
+    /;
+}
 sub send_excavators {
     PLANET:
     for my $planet (grep { $status->{ready}{$_} } keys %{$status->{ready}}) {
         verbose("Prepping excavators on $planet\n");
         my $port = $status->{spaceports}{$planet};
         my $originally_docked = $status->{ready}{$planet};
+        my $warned_cant_verify;
 
         # During a dry-run, not actually updating the database results in
         # each excavator from each planet going to the same target.  Add
@@ -673,7 +675,7 @@ sub send_excavators {
                     }
 
                     unless (grep { $_->{type} eq 'excavator' } @{$ships->{available}}) {
-                        if (grep { $_->{reason}[0] eq '1010' } @{$ships->{unavailable}}) {
+                        if (grep { $_->{ship}{type} eq 'excavator' and $_->{reason}[0] eq '1010' } @{$ships->{unavailable}}) {
                             # This will set the "last_excavated" time to now, which is not
                             # the case, but it's as good as we have.  It means that some bodies
                             # might take longer to get re-dug but whatever, there are others
@@ -686,6 +688,35 @@ sub send_excavators {
 
                         $need_more++;
                         next;
+                    }
+
+                    # Check even harder to see if inhabited, if we want to avoid those
+                    unless ($batch->{'inhabited-ok'}) {
+                        my @avail_attack_ships   = grep { $attack_ships{$_->{type}} }
+                            @{$ships->{available}};
+                        my @unavail_attack_ships = grep { $attack_ships{$_->{ship}{type}} }
+                            @{$ships->{unavailable}};
+
+                        if (@avail_attack_ships) {
+                            output("$dest_name is an occupied planet, trying again...\n");
+                            mark_orbit_occupied($x, $y);
+                            $need_more++;
+                            next;
+                        } elsif(@unavail_attack_ships) {
+                            # 1013 - Can only be sent to inhabited planets (uninhabited planet)
+                            # 1009 - Can only be sent to planets and stars (asteroid)
+                            if (!grep { $_->{reason}[0] eq '1013' or $_->{reason}[0] eq '1009'}
+                                    @unavail_attack_ships) {
+                                output("$dest_name is an occupied planet, trying again...\n");
+                                mark_orbit_occupied($x, $y);
+                                $need_more++;
+                                next;
+                            }
+                        } else {
+                            unless ($warned_cant_verify++) {
+                                diag("$planet has no spy pods, scows, or attack ships, cannot verify if this planet is inhabited!\n");
+                            }
+                        }
                     }
 
                     $skip{$dest_name}++;
@@ -872,33 +903,13 @@ sub mark_orbit_empty {
     }
 }
 
-sub create_star_db_sql {
-    return
-        <<SQL,
-CREATE TABLE stars(
-    id    int   primary key,
-    name  text,
-    x     int,
-    y     int,
-    color text
-)
-SQL
-        <<SQL,
-CREATE TABLE orbitals(
-    body_id        int,
-    star_id        int,
-    orbit          int,
-    x              int,
-    y              int,
-    type           text,
-    last_excavated datetime,
-    PRIMARY KEY(star_id, orbit),
-    FOREIGN KEY(star_id) REFERENCES stars(id)
-)
-SQL
-        <<SQL,
-CREATE INDEX orbital_x_y on orbitals(x,y)
-SQL
+sub mark_orbit_occupied {
+    my ($x, $y) = @_;
+
+    my $r = $star_db->do(q{update orbitals set empire_id = -1 where x = ? and y = ?}, {}, $x, $y);
+    unless ($r > 0) {
+        diag("Warning: could not update orbitals table for body at $x, $y!\n");
+    }
 }
 
 sub usage {
@@ -922,7 +933,6 @@ Options:
   --quiet                - Print no output except for errors.
   --config <file>        - Specify a GLC config file, normally lacuna.yml.
   --db <file>            - Specify a star database, normally stars.db.
-  --create-db            - Create the star database and initialize the schema.
   --planet <name>        - Specify a planet to process.  This option can be
                            passed multiple times to indicate several planets.
                            If this is not specified, all relevant colonies will
