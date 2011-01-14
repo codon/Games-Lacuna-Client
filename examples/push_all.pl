@@ -25,7 +25,7 @@ unless ( $cfg_file && -e $cfg_file ) {
 
 my $from;
 my $to;
-my $ship_type  = 'barge|cargo|galleon|freighter';
+my $ship_type;
 my $fill_ratio = 0.5;
 my $min_level  = 100_000;
 my $max_ships;
@@ -157,36 +157,63 @@ sub trade_items {
     
     my $total = sum( $food, $ore, $water, $energy );
     
+    if ($debug) {
+        warn <<DEBUG;
+Total available to push: $total
+
+DEBUG
+    }
+    
     my $food_percent   = $food   ? ($food   / $total) : 0;
     my $ore_percent    = $ore    ? ($ore    / $total) : 0;
     my $water_percent  = $water  ? ($water  / $total) : 0;
     my $energy_percent = $energy ? ($energy / $total) : 0;
     
-if ($debug) {
-    warn <<DEBUG;
-  food percent: $food_percent\%
-   ore percent: $ore_percent\%
- water percent: $water_percent\%
-energy percent: $energy_percent\%
+    if ($debug) {
+        my $food   = sprintf "%.2f",   $food_percent * 100;
+        my $ore    = sprintf "%.2f",    $ore_percent * 100;
+        my $water  = sprintf "%.2f",  $water_percent * 100;
+        my $energy = sprintf "%.2f", $energy_percent * 100;
+        
+        warn <<DEBUG;
+Percentages to push:
+  food: $food\%
+   ore: $ore\%
+ water: $water\%
+energy: $energy\%
+
 DEBUG
-}
+    }
     
     my $trade = {};
     my $hold  = $ship->{hold_size};
     
-    subtotals( $hold, $trade, $resources, $food_percent,   \@foods    );
-    subtotals( $hold, $trade, $resources, $ore_percent,    \@ores     );
-    subtotals( $hold, $trade, $resources, $water_percent,  ['water']  );
-    subtotals( $hold, $trade, $resources, $energy_percent, ['energy'] );
+    my $max_push = $hold > $total ? $total
+                 :                  $hold;
     
-    my $total_trade = sum( values %$trade );
+    subtotals( $max_push, $trade, $resources, $food_percent,   \@foods    );
+    subtotals( $max_push, $trade, $resources, $ore_percent,    \@ores     );
+    subtotals( $max_push, $trade, $resources, $water_percent,  ['water']  );
+    subtotals( $max_push, $trade, $resources, $energy_percent, ['energy'] );
     
-if ($debug) {
-    warn <<DEBUG;
-hold_size: $hold
-total resources to push: $total_trade
+    if ($debug) {
+        my $food   = 0;
+        my $ore    = 0;
+        my $water  = $trade->{water};
+        my $energy = $trade->{energy};
+        
+        map { $food += $trade->{$_} } @foods;
+        map { $ore  += $trade->{$_} } @ores;
+        
+        warn <<DEBUG;
+Totals after calculating individual resources (foods, ores):
+  food: $food
+   ore: $ore
+ water: $water
+energy: $energy
+
 DEBUG
-}
+    }
     
     # don't go to zero in any resource
     for my $type ( @foods, @ores, 'water', 'energy' ) {
@@ -196,6 +223,35 @@ DEBUG
         if ( ( $resources->{$type} - $trade->{$type} ) == 0 ) {
             --$trade->{$type};
         }
+    }
+    
+    if ($debug) {
+        my $food   = 0;
+        my $ore    = 0;
+        my $water  = $trade->{water};
+        my $energy = $trade->{energy};
+        
+        map { $food += $trade->{$_} } @foods;
+        map { $ore  += $trade->{$_} } @ores;
+        
+        warn <<DEBUG;
+Totals ensuring none drop to zero:
+  food: $food
+   ore: $ore
+ water: $water
+energy: $energy
+
+DEBUG
+    }
+    
+    my $total_trade = sum( values %$trade );
+    
+    if ($debug) {
+        warn <<DEBUG;
+Total resources to push: $total_trade
+         Ship hold size: $hold
+
+DEBUG
     }
     
     if ( ( $total_trade / $hold ) < $fill_ratio ) {
@@ -208,6 +264,25 @@ DEBUG
         $resources->{$_} -= $trade->{$_}
     }
     @foods, @ores, 'water', 'energy';
+    
+    if ($debug) {
+        my $food   = 0;
+        my $ore    = 0;
+        my $water  = $resources->{water}  || 0;
+        my $energy = $resources->{energy} || 0;
+        
+        map { $food += $resources->{$_}||0 } @foods;
+        map { $ore  += $resources->{$_}||0 } @ores;
+        
+        warn <<DEBUG;
+Remaining after push:
+  food: $food
+   ore: $ore
+ water: $water
+energy: $energy
+
+DEBUG
+    }
     
     return map {
             +{
@@ -229,10 +304,32 @@ sub resource_totals {
     my $water  = $resources->{water};
     my $energy = $resources->{energy};
     
+    if ($debug) {
+        warn <<DEBUG;
+On planet:
+  food: $food
+   ore: $ore
+ water: $water
+energy: $energy
+
+DEBUG
+    }
+    
     $food   = ( ($food   - $min_level) > 0 ) ? ($food   - $min_level) : 0;
     $ore    = ( ($ore    - $min_level) > 0 ) ? ($ore    - $min_level) : 0;
     $water  = ( ($water  - $min_level) > 0 ) ? ($water  - $min_level) : 0;
     $energy = ( ($energy - $min_level) > 0 ) ? ($energy - $min_level) : 0;
+    
+    if ($debug) {
+        warn <<DEBUG;
+Available above min_level:
+  food: $food
+   ore: $ore
+ water: $water
+energy: $energy
+
+DEBUG
+    }
     
     return $food, $ore, $water, $energy;
 }
@@ -268,7 +365,7 @@ sub usage {
 Usage: $0 CONFIG_FILE
        --from       PLANET_NAME
        --to         PLANET_NAME
-       --ship_type  SHIP_NAME
+       --ship_type  SHIP_TYPE
        --fill_ratio FILL_RATIO
        --min_level  MIN_LEVEL
        --max_ships  MAX_SHIPS
@@ -280,7 +377,8 @@ Resources are pushed in proportion to the stored levels.
 
 CONFIG_FILE  defaults to 'lacuna.yml'
 
-SHIP_TYPE is a regex, and defaults to 'barge|cargo|galleon|freighter'
+SHIP_TYPE is a regex used to decide which ships to use to push.
+By default, is not set, so all trade ships will be used.
 
 FILL_RATIO defaults to 0.5, meaning a ship is only sent if it can be filled 50%
 
