@@ -138,6 +138,7 @@ do_digs() if $opts{'do-digs'};
 send_excavators() if $opts{'send-excavators'} and $star_db;
 report_status();
 output("$glc->{total_calls} api calls made.\n");
+output("You have made $glc->{rpc_count} calls today\n");
 
 # Destroy client object prior to global destruction to avoid GLC bug
 undef $glc;
@@ -244,7 +245,6 @@ sub get_status {
 
         if ($status->{archlevel}{$planet_name} and $status->{archlevel}{$planet_name} >= 15) {
             my @shipyards = find_shipyards($buildings);
-            $status->{shipyards}{$planet_name} = \@shipyards;
             verbose("No shipyards on $planet_name\n") unless @shipyards;
             for my $yard (@shipyards) {
                 verbose("Found a shipyard on $planet_name\n");
@@ -274,12 +274,18 @@ sub get_status {
                     grep { $_->{type} eq 'excavator' }
                     @ships_building;
 
+                my $last = 0;
                 if (@excavators_building) {
                     verbose(scalar @excavators_building . " excavators building at this yard\n");
                     push @{$status->{building}{$planet_name}}, @excavators_building;
                     $status->{not_building}{$planet_name} = 0;
-                    $yard->{last_finishes} = max(map { $_->{finished} } @excavators_building);
+                    $last = max(map { $_->{finished} } @excavators_building);
                 }
+
+                push @{$status->{shipyards}{$planet_name}}, {
+                    yard          => $yard,
+                    last_finishes => $last,
+                };
             }
         } else {
             verbose("$planet_name can't build excavators, skipping shipyards\n")
@@ -794,7 +800,7 @@ sub send_excavators {
                 # we could be out of materials, etc.  This is probably cheaper than
                 # doing the get_buildable call before every single build.
                 my $ok = eval {
-                    my $build = $yard->build_ship('excavator');
+                    my $build = $yard->{yard}->build_ship('excavator');
                     my $finish = time() + $build->{building}{work}{seconds_remaining};
 
                     push @{$status->{building}{$planet}}, {
