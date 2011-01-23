@@ -15,6 +15,7 @@ our @BuildingTypes = (qw(
     AtmosphericEvaporator
     Bean
     Beeldeban
+    BeeldebanNest
     Bread
     Burger
     Cheese
@@ -56,7 +57,6 @@ our @BuildingTypes = (qw(
     Mine
     MunitionsLab
     NaturalSpring
-    OracleOfAnid
     OreRefinery
     Oversight
     Pancake
@@ -89,7 +89,6 @@ our @BuildingTypes = (qw(
     WaterProduction
     WaterPurification
     WaterReclamation
-    WaterStorage
     Wheat
   ),
 );
