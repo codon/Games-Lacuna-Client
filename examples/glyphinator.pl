@@ -142,11 +142,15 @@ if ($star_db) {
 my $finished;
 my $status;
 while (!$finished) {
+    output("Starting up at " . localtime() . "\n");
+    my $calls_start = $glc->{total_calls} || 0;
     get_status();
     do_digs() if $opts{'do-digs'};
     send_excavators() if $opts{'send-excavators'} and $star_db;
     report_status();
-    output("$glc->{total_calls} api calls made.\n");
+    my $calls_end = $glc->{total_calls};
+    my $calls_made = $calls_end - $calls_start;
+    output("$calls_made api calls made.\n");
     output("You have made $glc->{rpc_count} calls today\n");
 
     # Clear cache before sleeping
