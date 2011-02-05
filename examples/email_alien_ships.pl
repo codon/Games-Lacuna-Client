@@ -11,7 +11,18 @@ use Games::Lacuna::Client ();
 
 my $cfg_file = shift(@ARGV) || 'lacuna.yml';
 unless ( $cfg_file and -e $cfg_file ) {
-	die "Did not provide a config file";
+  $cfg_file = eval{
+    require File::HomeDir;
+    require File::Spec;
+    my $dist = File::HomeDir->my_dist_config('Games-Lacuna-Client');
+    File::Spec->catfile(
+      $dist,
+      'login.yml'
+    ) if $dist;
+  };
+  unless ( $cfg_file and -e $cfg_file ) {
+    die "Did not provide a config file";
+  }
 }
 
 my $email_file = shift(@ARGV) || 'email_alien_ships.yml';
@@ -25,6 +36,7 @@ my $client = Games::Lacuna::Client->new(
 	cfg_file => $cfg_file,
 	# debug    => 1,
 );
+$email_conf->{cache_dir} ||= $client->cache_dir;
 
 # validate config file
 for my $key (qw(cache_dir email)) {
@@ -78,6 +90,7 @@ foreach my $name ( sort keys %planets ) {
     my $space_port_id = List::Util::first {
             $buildings->{$_}->{name} eq 'Space Port'
     } keys %$buildings;
+    next unless $space_port_id;
     
     my $space_port = $client->building( id => $space_port_id, type => 'SpacePort' );
     
