@@ -75,6 +75,7 @@ GetOptions(\%opts,
     'rebuild',
     'fill:i',
     'max-build=i',
+    'save-spots=i',
 
     'and'                     => $batch_opt_cb,
     'max-excavators|max=s'    => $batch_opt_cb,
@@ -158,7 +159,9 @@ while (!$finished) {
         # that it gives us a chance to reauth each time through the loop, in
         # case you get the "Session expired" error.
         $glc = Games::Lacuna::Client->new(
-            cfg_file => $opts{config} || "$FindBin::Bin/../lacuna.yml",
+            cfg_file       => $opts{config} || "$FindBin::Bin/../lacuna.yml",
+            rpc_sleep      => 1,
+            prompt_captcha => 1,
         );
 
         output("Starting up at " . localtime() . "\n");
@@ -189,6 +192,9 @@ while (!$finished) {
     }
 
     if (defined $opts{continuous}) {
+        diag("WARNING!!!!! Captcha prompt will cause script hang if you are not here to answer!\n")
+            if $opts{'send-excavators'};
+
         my $sleep = $opts{continuous} || 360;
 
         if ($opts{'do-digs'} and $status->{digs}) {
@@ -241,6 +247,8 @@ sub get_status {
         my $buildings = $result->{buildings};
         $status->{planet_location}{$planet_name}{x} = $result->{status}{body}{x};
         $status->{planet_location}{$planet_name}{y} = $result->{status}{body}{y};
+        $status->{planet_resources}{$planet_name}{$_} = $result->{status}{body}{$_}
+            for qw/water_hour energy_hour ore_hour food_hour/;
 
         my ($arch, $level, $seconds_remaining) = find_arch_min($buildings);
         if ($arch) {
@@ -272,14 +280,8 @@ sub get_status {
             $status->{spaceports}{$planet_name} = $spaceport;
 
             # How many in flight?  When arrives?
-            my $page = 1;
-            my (@ships, $ship_count);
-            while (!defined $ship_count or @ships < $ship_count) {
-                my $page_of_ships = $spaceport->view_all_ships($page);
-                $ship_count ||= $page_of_ships->{number_of_ships};
-                push @ships, @{$page_of_ships->{ships}};
-                $page++;
-            }
+            my $result = $spaceport->view_all_ships({no_paging => 1});
+            my @ships = @{$result->{ships}};
             my @excavators = grep { $_->{type} eq 'excavator' } @ships;
 
             push @{$status->{flying}},
@@ -922,11 +924,28 @@ sub send_excavators {
                     my $delta = $target_finish - $finishes;
                     verbose("$delta seconds of build needed to fill up shipyard to $minutes minutes\n");
 
+                    my $new = 0;
                     if ($delta > 0) {
-                        my $new = int($delta / $build_time) + ($delta % $build_time ? 1 : 0);
-                        verbose("Need " . pluralize($new, "additional excavator") . "\n");
-                        $need += $new;
+                        $new = int($delta / $build_time) + ($delta % $build_time ? 1 : 0);
+                        verbose("Need " . pluralize($new, "additional excavator") . " based on build time\n");
                     }
+
+                    # Get the cost of a build
+                    my ($ore_cost, $energy_cost, $water_cost, $food_cost) =
+                        map { @{$buildable->{buildable}{$_}{cost}}{qw/ore energy water food/} }
+                        grep { $_ eq 'excavator' }
+                        keys %{$buildable->{buildable}};
+                    verbose("An excavator costs $ore_cost ore, $energy_cost energy, $water_cost water, and $food_cost food in this yard\n");
+                    my $by_ore    = $status->{planet_resources}{$planet}{ore_hour} / $ore_cost;
+                    my $by_water  = $status->{planet_resources}{$planet}{water_hour} / $water_cost;
+                    my $by_food   = $status->{planet_resources}{$planet}{food_hour} / $food_cost;
+                    my $by_energy = $status->{planet_resources}{$planet}{energy_hour} / $energy_cost;
+                    my $by_resource = min($by_ore, $by_water, $by_food, $by_energy);
+                    my $new_by_resource = int($by_resource * ($minutes / 60));
+                    verbose("$planet can sustain $by_resource excavators per hour based on current production, for $new_by_resource in $minutes minutes\n");
+                    $new = min($new, $new_by_resource);
+
+                    $need += $new;
                 }
 
                 verbose("Would need " . pluralize($need, "ship") . " to fill up to $minutes minutes on $planet\n");
@@ -937,6 +956,11 @@ sub send_excavators {
 
             $build = min($build - $built_count, $opts{'max-build'} - $built_count)
                 if defined $opts{'max-build'};
+
+            verbose("Saving $opts{'save-spots'} spaceport spots\n") if $opts{'save-spots'};
+
+            # reduce $build to at most the number of open spaceport slots, holding some open if requested
+            $build = min($build, $status->{open_docks}{$planet} - ($opts{'save-spots'} || 0));
 
             if ($build) {
                 for (1..$build) {
@@ -1176,6 +1200,7 @@ Options:
                            value if not overridden here before defaulting to 360.
   --max-build <n>        - Build at most <n> excavators on each colony, after the
                            --rebuild and/or --fill rules are computed.
+  --save-spots <n>       - Leave at least <n> Spaceport spots unfilled
   --max-excavators <n>   - Send at most this number of excavators from any colony.
                            This argument can also be specified as a percentage,
                            eg '25%'

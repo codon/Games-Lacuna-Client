@@ -28,6 +28,8 @@ use Class::XSAccessor {
     session_persistent
     cfg_file
     cache
+    rpc_sleep
+    prompt_captcha
   )],
 };
 
@@ -42,6 +44,7 @@ require Games::Lacuna::Client::Empire;
 require Games::Lacuna::Client::Inbox;
 require Games::Lacuna::Client::Map;
 require Games::Lacuna::Client::Stats;
+require Games::Lacuna::Client::Captcha;
 
 
 sub new {
@@ -68,7 +71,7 @@ sub new {
        or not exists $opt{password}
        or not exists $opt{api_key};
   $opt{uri} =~ s/\/+$//;
-  
+
   my $self = bless {
     session_start      => 0,
     session_id         => 0,
@@ -78,7 +81,7 @@ sub new {
     debug              => 0,
     %opt
   } => $class;
-  
+
   # the actual RPC client
   $self->{rpc} = Games::Lacuna::Client::RPC->new(client => $self);
 
@@ -128,7 +131,6 @@ sub stats {
   my $self = shift;
   return Games::Lacuna::Client::Stats->new(client => $self, @_);
 }
-
 
 sub register_destroy_hook {
   my $self = shift;
@@ -197,7 +199,7 @@ sub write_cfg {
 
 sub assert_session {
   my $self = shift;
-  
+
   my $now = time();
   if (!$self->session_id || $now - $self->session_start > $self->session_timeout) {
     if ($self->debug) {
@@ -250,7 +252,7 @@ Games::Lacuna::Client - An RPC client for the Lacuna Expanse
 
   use Games::Lacuna::Client;
   my $client = Games::Lacuna::Client->new(cfg_file => 'path/to/myempire.yml');
-  
+
   # or manually:
   my $client = Games::Lacuna::Client->new(
     uri      => 'https://path/to/server',
@@ -260,10 +262,10 @@ Games::Lacuna::Client - An RPC client for the Lacuna Expanse
     #session_peristent => 1, # only makes sense with cfg_file set!
     #debug    => 1,
   );
-  
+
   my $res = $client->alliance->find("The Understanding");
   my $id = $res->{alliances}->[0]->{id};
-  
+
   use Data::Dumper;
   print Dumper $client->alliance->view_profile( $res->{alliances}->[0]->{id} );
 
