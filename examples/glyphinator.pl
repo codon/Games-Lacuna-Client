@@ -231,6 +231,7 @@ sub get_status {
     $status->{planets} = \%planets;
 
     # Scan each planet
+    my $now = time();
     for my $planet_name (keys %planets) {
         if (keys %do_planets) {
             next unless $do_planets{normalize_planet($planet_name)};
@@ -255,7 +256,7 @@ sub get_status {
             if ($seconds_remaining) {
                 push @{$status->{digs}}, {
                     planet   => $planet_name,
-                    finished => time() + $seconds_remaining,
+                    finished => $now + $seconds_remaining,
                 };
             } else {
                 $status->{idle}{$planet_name} = 1;
@@ -284,7 +285,7 @@ sub get_status {
             push @{$status->{flying}},
                 map {
                     $_->{distance} = int(($_->{arrives} - $_->{departed}) * $_->{speed} / 360000);
-                    $_->{remaining} = int(($_->{arrives} - time()) * $_->{speed} / 360000);
+                    $_->{remaining} = int(($_->{arrives} - $now) * $_->{speed} / 360000);
                     $_
                 }
                 map {
@@ -349,7 +350,7 @@ sub get_status {
                     grep { $_->{type} eq 'excavator' }
                     @ships_building;
 
-                my $last = 0;
+                my $last = $now;
                 if (@excavators_building) {
                     verbose(pluralize(scalar @excavators_building, "excavator") . " building at this yard\n");
                     push @{$status->{building}{$planet_name}}, @excavators_building;
@@ -360,6 +361,7 @@ sub get_status {
                 push @{$status->{shipyards}{$planet_name}}, {
                     yard          => $yard,
                     last_finishes => $last,
+                    build_time    => 0, # placeholder in case this doesn't get populated
                 };
             }
         } else {
@@ -859,6 +861,7 @@ sub send_excavators {
 
                 my $need = 0;
                 my $minutes = $opts{fill} || $opts{continuous} || 360;
+                my ($ore_cost, $energy_cost, $water_cost, $food_cost);
                 for my $yard (@{$status->{shipyards}{$planet} || []}) {
 
                     # Get the length of a build here
@@ -867,6 +870,7 @@ sub send_excavators {
                         grep { $_ eq 'excavator' }
                         keys %{$buildable->{buildable}};
                     verbose("An excavator will take $build_time seconds in this yard\n");
+                    $yard->{build_time} = $build_time;
 
                     # Figure out how much time we'd need to fill in for
                     my $finishes = $yard->{last_finishes} || time();
@@ -880,25 +884,28 @@ sub send_excavators {
                         verbose("Need " . pluralize($new, "additional excavator") . " based on build time\n");
                     }
 
-                    # Get the cost of a build
-                    my ($ore_cost, $energy_cost, $water_cost, $food_cost) =
-                        map { @{$buildable->{buildable}{$_}{cost}}{qw/ore energy water food/} }
-                        grep { $_ eq 'excavator' }
-                        keys %{$buildable->{buildable}};
-                    verbose("An excavator costs $ore_cost ore, $energy_cost energy, $water_cost water, and $food_cost food in this yard\n");
-                    my $by_ore    = $status->{planet_resources}{$planet}{ore_hour} / $ore_cost;
-                    my $by_water  = $status->{planet_resources}{$planet}{water_hour} / $water_cost;
-                    my $by_food   = $status->{planet_resources}{$planet}{food_hour} / $food_cost;
-                    my $by_energy = $status->{planet_resources}{$planet}{energy_hour} / $energy_cost;
-                    my $by_resource = min($by_ore, $by_water, $by_food, $by_energy);
-                    my $new_by_resource = int($by_resource * ($minutes / 60));
-                    verbose("$planet can sustain $by_resource excavators per hour based on current production, for $new_by_resource in $minutes minutes\n");
-                    $new = min($new, $new_by_resource);
-
                     $need += $new;
+
+                    # Get the cost of a build
+                    unless ($ore_cost) {
+                        ($ore_cost, $energy_cost, $water_cost, $food_cost) =
+                            map { @{$buildable->{buildable}{$_}{cost}}{qw/ore energy water food/} }
+                            grep { $_ eq 'excavator' }
+                            keys %{$buildable->{buildable}};
+                    }
                 }
 
                 verbose("Would need " . pluralize($need, "ship") . " to fill up to $minutes minutes on $planet\n");
+
+                verbose("An excavator costs $ore_cost ore, $energy_cost energy, $water_cost water, and $food_cost food in this yard\n");
+                my $by_ore    = $status->{planet_resources}{$planet}{ore_hour}    / $ore_cost;
+                my $by_water  = $status->{planet_resources}{$planet}{water_hour}  / $water_cost;
+                my $by_food   = $status->{planet_resources}{$planet}{food_hour}   / $food_cost;
+                my $by_energy = $status->{planet_resources}{$planet}{energy_hour} / $energy_cost;
+                my $by_resource = min($by_ore, $by_water, $by_food, $by_energy);
+                my $need_by_resource = int($by_resource * ($minutes / 60));
+                verbose("$planet can sustain $by_resource excavators per hour based on current production, for $need_by_resource in $minutes minutes\n");
+                $need = min($need, $need_by_resource);
 
                 # make whichever is higher, the number calculated here, or from --rebuild
                 $build = max($build, $need);
@@ -910,14 +917,15 @@ sub send_excavators {
             verbose("Saving $opts{'save-spots'} spaceport spots\n") if $opts{'save-spots'};
 
             # reduce $build to at most the number of open spaceport slots, holding some open if requested
+            verbose("Reducing to lesser of $build (need) and @{[$status->{open_docks}{$planet} - ($opts{'save-spots'} || 0)]} (spots)\n");
             $build = min($build, $status->{open_docks}{$planet} - ($opts{'save-spots'} || 0));
 
             if ($build) {
                 for (1..$build) {
                     # Add an excavator to a shipyard if we can, to wherever the
                     # shortest build queue is
-
-                    my $yard = reduce { $a->{last_finishes} < $b->{last_finishes} ? $a : $b }
+                    my $yard = reduce { $a->{last_finishes} + $a->{build_time}
+                        < $b->{last_finishes} + $b->{build_time} ? $a : $b }
                         @{$status->{shipyards}{$planet} || []};
 
                     # Catch if this dies, we didnt actually confirm that we could build
@@ -1057,7 +1065,7 @@ SQL
 
         $find_dest->execute(@vals);
         while (my $row = $find_dest->fetchrow_hashref) {
-            my $dest_name = $row->{name} || "$row->{star_name} $row->{orbit}";
+            my $dest_name = "$row->{star_name} $row->{orbit}";
             my $dist = int(sqrt($row->{dist}));
             verbose("Selected destination $dest_name, which is " . pluralize($dist, "unit") . " away\n");
 
