@@ -160,7 +160,7 @@ while (!$finished) {
         # case you get the "Session expired" error.
         $glc = Games::Lacuna::Client->new(
             cfg_file       => $opts{config} || "$FindBin::Bin/../lacuna.yml",
-            rpc_sleep      => 1,
+            rpc_sleep      => 1.333, # 45 per minute, new default is 50 rpc/min
         );
 
         output("Starting up at " . localtime() . "\n");
@@ -186,6 +186,11 @@ while (!$finished) {
             $e->rethrow;
         } else {
             my $e = Exception::Class->caught();
+            if ($e =~ /malformed JSON string/) {
+                diag("Caught malformed JSON error, restarting\n");
+                $status = {};
+                redo;
+            }
             ref $e ? $e->rethrow : die $e;
         }
     }
